@@ -62,7 +62,8 @@ func (t *PackedTable) hashEntry(key []byte) uint32 {
 		}
 
 		keySize, _ := t.readSize(int(off))
-		if keySize == len(key) && bytes.Compare(key, t.buf[int(off)+8:int(off)+8+len(key)]) == 0 {
+		keyOff := int(off) + 8
+		if keySize == len(key) && bytes.Compare(key, t.buf[keyOff:keyOff+len(key)]) == 0 {
 			break
 		}
 	}
@@ -80,7 +81,8 @@ func (t *PackedTable) findKey(key []byte) int {
 		}
 
 		keySize, _ := t.readSize(int(off))
-		if keySize == len(key) && bytes.Compare(key, t.buf[int(off)+8:int(off)+8+len(key)]) == 0 {
+		keyOff := int(off) + 8
+		if keySize == len(key) && bytes.Compare(key, t.buf[keyOff:keyOff+len(key)]) == 0 {
 			return int(off)
 		}
 	}
