@@ -95,6 +95,22 @@ func NewMemcache(minFreeMem, tableSize, maxKeySize, maxValSize int) *Memcache {
 	return c
 }
 
+func (c *Memcache) MinKeySize() int {
+	return 1
+}
+
+func (c *Memcache) MinValSize() int {
+	return 1
+}
+
+func (c *Memcache) MaxKeySize() int {
+	return c.maxKeySize
+}
+
+func (c *Memcache) MaxValSize() int {
+	return c.maxValSize
+}
+
 func (c *Memcache) memWatcher() {
 	ticker := time.NewTicker(time.Second)
 	for range ticker.C {
