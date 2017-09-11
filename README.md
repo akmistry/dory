@@ -1,2 +1,2 @@
-# dory
-Dory: A cluster-wide cache utilising spare/unused memory.
+# Dory
+A cluster-wide cache utilising spare/unused memory.
