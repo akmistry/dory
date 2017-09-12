@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -65,6 +66,7 @@ func main() {
 	h2s := &http2.Server{
 		// TODO: Flag configurable.
 		MaxConcurrentStreams: 8,
+		IdleTimeout:          time.Minute,
 	}
 	serverConnOpts := &http2.ServeConnOpts{Handler: handler}
 	for {
