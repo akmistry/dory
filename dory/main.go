@@ -67,6 +67,7 @@ func main() {
 		// TODO: Flag configurable.
 		MaxConcurrentStreams: 8,
 		IdleTimeout:          time.Minute,
+		NewWriteScheduler:    server.NewRoundRobinScheduler,
 	}
 	serverConnOpts := &http2.ServeConnOpts{Handler: handler}
 	for {
