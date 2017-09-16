@@ -164,25 +164,21 @@ func (c *Memcache) sweepKeys() {
 	for range ticker.C {
 		c.lock.Lock()
 		start := time.Now()
-		deleted := 0
-		ks := make([]uint64, 0, len(c.keys))
-		for k, _ := range c.keys {
-			ks = append(ks, k)
-		}
-		for _, k := range ks {
-			t, ok := c.keys[k]
-			if !ok {
-				continue
-			} else if t == nil || t.table == nil {
+		numKeys := len(c.keys)
+		nils := 0
+		for k, v := range c.keys {
+			if v == nil || v.table == nil {
+				nils++
 				c.erase(k)
-				deleted++
 			}
 		}
-		if debugLog {
-			log.Printf("Swept %d keys in %0.2f sec, deleted %d",
-				len(ks), time.Since(start).Seconds(), deleted)
-		}
+		deleted := numKeys - len(c.keys)
 		c.lock.Unlock()
+
+		if debugLog {
+			log.Printf("Swept %d keys in %0.3f sec, deleted %d, nil %d",
+				numKeys, time.Since(start).Seconds(), deleted, nils)
+		}
 	}
 }
 
@@ -190,19 +186,17 @@ func (c *Memcache) downsizeTables() {
 	start := time.Now()
 	deleted := 0
 	for e := c.tables.Front(); e != nil; {
+		next := e.Next()
 		t := e.Value.(*memcacheTable)
 		if t.table.NumEntries() == 0 {
 			t.free()
-			curr := e
-			e = e.Next()
-			c.tables.Remove(curr)
+			c.tables.Remove(e)
 			deleted++
-		} else {
-			e = e.Next()
 		}
+		e = next
 	}
 	if debugLog && deleted > 0 {
-		log.Printf("Deleted %d empty tables in %0.2f sec", deleted, time.Since(start).Seconds())
+		log.Printf("Deleted %d empty tables in %0.3f sec", deleted, time.Since(start).Seconds())
 	}
 
 	start = time.Now()
@@ -212,9 +206,10 @@ func (c *Memcache) downsizeTables() {
 		t := last.Value.(*memcacheTable)
 		t.free()
 		c.tables.Remove(last)
+		deleted++
 	}
 	if debugLog && deleted > 0 {
-		log.Printf("Deleted %d excess tables in %0.2f sec", deleted, time.Since(start).Seconds())
+		log.Printf("Deleted %d excess tables in %0.3f sec", deleted, time.Since(start).Seconds())
 	}
 
 	// TODO: Compact and merge underutilised tables.
@@ -229,7 +224,7 @@ func (c *Memcache) allocTable() *memcacheTable {
 func (c *Memcache) erase(hash uint64) {
 	_, ok := c.keys[hash+1]
 	if ok {
-		// TODO: Maybe simplify be using a dummy deleted element instead of nil.
+		// TODO: Maybe simplify by using a dummy deleted element instead of nil.
 		c.keys[hash] = nil
 	} else {
 		// No next hash, so no next element for linear probing.
