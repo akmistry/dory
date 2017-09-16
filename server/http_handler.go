@@ -6,8 +6,22 @@ import (
 	"net/http"
 	"sync"
 
+	prom "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/akmistry/dory"
 )
+
+var (
+	requestCounter = prom.NewCounterVec(prom.CounterOpts{
+		Name: "dory_http_requests_total",
+		Help: "Total number of dory HTTP requests.",
+	}, []string{"code", "method"})
+)
+
+func init() {
+	prom.MustRegister(requestCounter)
+}
 
 type Handler struct {
 	c       *dory.Memcache
@@ -89,10 +103,10 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func NewHandler(c *dory.Memcache) *Handler {
+func NewHandler(c *dory.Memcache) http.Handler {
 	pool := &sync.Pool{New: func() interface{} { return make([]byte, c.MaxValSize()) }}
-	return &Handler{
+	return promhttp.InstrumentHandlerCounter(requestCounter, &Handler{
 		c:       c,
 		bufPool: pool,
-	}
+	})
 }
