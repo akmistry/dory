@@ -47,6 +47,28 @@ func (c *Client) makeUrl(key []byte) string {
 	return fmt.Sprintf("http://%s/%s", c.host, url.PathEscape(string(key)))
 }
 
+func (c *Client) Ping(ctx context.Context) error {
+	var cf context.CancelFunc
+	if c.maxTimeout > 0 {
+		ctx, cf = context.WithTimeout(ctx, c.maxTimeout)
+		defer cf()
+	}
+
+	req, err := http.NewRequest("PING", c.makeUrl(nil), nil)
+	if err != nil {
+		panic(err)
+	}
+	req = req.WithContext(ctx)
+
+	resp, err := c.httpClient.Do(req)
+	// TODO: Log errors.
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 func (c *Client) Has(ctx context.Context, key []byte) (bool, error) {
 	var cf context.CancelFunc
 	if c.maxTimeout > 0 {

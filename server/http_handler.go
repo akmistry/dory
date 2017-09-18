@@ -98,6 +98,9 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		h.c.Put(key, buf[:n])
 	case "DELETE":
 		h.c.Delete(key)
+	case "PING":
+		// Health-check method.
+		resp.WriteHeader(http.StatusOK)
 	default:
 		resp.WriteHeader(http.StatusMethodNotAllowed)
 	}
