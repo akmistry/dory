@@ -55,7 +55,7 @@ func main() {
 		}()
 	}
 
-	cache := dory.NewMemcache(*minAvailableMb*megabyte, defaultTableSize, *maxKeySize, *maxValSize)
+	cache := dory.NewMemcache(int64(*minAvailableMb)*megabyte, defaultTableSize, *maxKeySize, *maxValSize)
 	handler := server.NewHandler(cache)
 
 	l, err := net.Listen("tcp4", *listenAddr)

@@ -1,13 +1,8 @@
 package dory
 
 import (
-	"bufio"
-	"bytes"
 	"container/list"
-	"fmt"
-	"io/ioutil"
 	"log"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,22 +13,30 @@ import (
 
 const (
 	megabyte = 1024 * 1024
+
+	maxUintptr = ^uintptr(0)
+	maxMemory  = (maxUintptr >> 1)
 )
 
 var (
 	cacheSize = prom.NewGauge(prom.GaugeOpts{
 		Name: "dory_cache_size",
-		Help: "Size of cache",
+		Help: "Size of cache.",
 	})
 	cacheSizeMax = prom.NewGauge(prom.GaugeOpts{
 		Name: "dory_cache_size_max",
-		Help: "Maximum cache size",
+		Help: "Maximum cache size.",
+	})
+	cacheKeys = prom.NewGauge(prom.GaugeOpts{
+		Name: "dory_cache_keys",
+		Help: "Number of keys in cache.",
 	})
 )
 
 func init() {
 	prom.MustRegister(cacheSize)
 	prom.MustRegister(cacheSizeMax)
+	prom.MustRegister(cacheKeys)
 }
 
 type memcacheTable struct {
@@ -69,7 +72,7 @@ func (t *memcacheTable) free() {
 }
 
 type Memcache struct {
-	minFreeMem int
+	minFreeMem int64
 	tableSize  int
 	maxKeySize int
 	maxValSize int
@@ -82,7 +85,7 @@ type Memcache struct {
 	lock      sync.Mutex
 }
 
-func NewMemcache(minFreeMem, tableSize, maxKeySize, maxValSize int) *Memcache {
+func NewMemcache(minFreeMem int64, tableSize, maxKeySize, maxValSize int) *Memcache {
 	c := &Memcache{
 		minFreeMem: minFreeMem,
 		tableSize:  tableSize,
@@ -114,39 +117,21 @@ func (c *Memcache) MaxValSize() int {
 func (c *Memcache) memWatcher() {
 	ticker := time.NewTicker(time.Second)
 	for range ticker.C {
-		// TODO: Refactor.
-		meminfo, err := ioutil.ReadFile("/proc/meminfo")
-		if err != nil {
-			panic(err)
-		}
-		memAvailable := 0
-		r := bufio.NewReader(bytes.NewReader(meminfo))
-		line, _ := r.ReadString('\n')
-		for line != "" {
-			if strings.HasPrefix(line, "MemAvailable:") {
-				remain := strings.TrimSpace(line[len("MemAvailable:"):])
-				var units string
-				_, err = fmt.Sscanf(remain, "%d %s", &memAvailable, &units)
-				if err != nil {
-					panic(err)
-				}
-				if units == "kB" {
-					memAvailable *= 1024
-				}
-				break
-			}
-			line, _ = r.ReadString('\n')
-		}
+		memAvailable := getMemAvailable()
 
 		c.lock.Lock()
-		availableTableMem := c.tables.Len()*c.tableSize + memAvailable - c.minFreeMem
-		c.maxTables = availableTableMem / c.tableSize
+		availableTableMem := int64(c.tables.Len()*c.tableSize) + memAvailable - c.minFreeMem
+		if availableTableMem > int64(maxMemory) {
+			availableTableMem = int64(maxMemory)
+		}
+		c.maxTables = int(availableTableMem / int64(c.tableSize))
 		if c.maxTables < 0 {
 			c.maxTables = 0
 		}
 		c.downsizeTables()
 		numTables := c.tables.Len()
 		maxTables := c.maxTables
+		numKeys := len(c.keys)
 		c.lock.Unlock()
 
 		if debugLog {
@@ -156,6 +141,7 @@ func (c *Memcache) memWatcher() {
 
 		cacheSize.Set(float64(numTables * c.tableSize))
 		cacheSizeMax.Set(float64(maxTables * c.tableSize))
+		cacheKeys.Set(float64(numKeys))
 	}
 }
 
