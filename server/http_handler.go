@@ -1,9 +1,9 @@
 package server
 
 import (
-	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 
 	prom "github.com/prometheus/client_golang/prometheus"
@@ -66,7 +66,7 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			resp.WriteHeader(http.StatusNotFound)
 			return
 		}
-		resp.Header().Add("Content-Length", fmt.Sprintf("%d", len(outBuf)))
+		resp.Header().Add("Content-Length", strconv.Itoa(len(outBuf)))
 		resp.Write(outBuf)
 	case "PUT":
 		if req.ContentLength < 0 {
