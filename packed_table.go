@@ -124,7 +124,8 @@ func (t *PackedTable) Get(key, buf []byte) []byte {
 	}
 
 	keySize, valSize := t.readSize(off)
-	buf = append(buf, t.buf[off+8+keySize:off+8+keySize+valSize]...)
+	valOff := off + 8 + keySize
+	buf = append(buf, t.buf[valOff:valOff+valSize]...)
 	return buf
 }
 
