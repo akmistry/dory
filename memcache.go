@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"log"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/dgryski/go-farm"
@@ -39,38 +38,6 @@ func init() {
 	prom.MustRegister(cacheKeys)
 }
 
-type memcacheTable struct {
-	table   *PackedTable
-	mmapBuf []byte
-	gen     int
-}
-
-func newMemcacheTable(size, gen int) *memcacheTable {
-	// TODO: Refactor.
-	buf, err := syscall.Mmap(0, 0, size, syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
-	if err != nil {
-		panic(err)
-	}
-	return &memcacheTable{
-		table:   NewPackedTable(buf),
-		mmapBuf: buf,
-		gen:     gen,
-	}
-}
-
-func (t *memcacheTable) free() {
-	if t.table == nil {
-		return
-	}
-	err := syscall.Munmap(t.mmapBuf)
-	if err != nil {
-		panic(err)
-	}
-	t.table = nil
-	t.mmapBuf = nil
-}
-
 type Memcache struct {
 	minFreeMem int64
 	tableSize  int
@@ -78,7 +45,7 @@ type Memcache struct {
 	maxValSize int
 
 	// TODO: Document how this works.
-	keys      map[uint64]*memcacheTable
+	keys      map[uint64]*DiscardableTable
 	tables    list.List
 	maxTables int
 	count     int
@@ -91,7 +58,7 @@ func NewMemcache(minFreeMem int64, tableSize, maxKeySize, maxValSize int) *Memca
 		tableSize:  tableSize,
 		maxKeySize: maxKeySize,
 		maxValSize: maxValSize,
-		keys:       make(map[uint64]*memcacheTable),
+		keys:       make(map[uint64]*DiscardableTable),
 	}
 	go c.memWatcher()
 	go c.sweepKeys()
@@ -153,7 +120,7 @@ func (c *Memcache) sweepKeys() {
 		numKeys := len(c.keys)
 		nils := 0
 		for k, v := range c.keys {
-			if v == nil || v.table == nil {
+			if v == nil || !v.IsAlive() {
 				nils++
 				c.erase(k)
 			}
@@ -173,9 +140,9 @@ func (c *Memcache) downsizeTables() {
 	deleted := 0
 	for e := c.tables.Front(); e != nil; {
 		next := e.Next()
-		t := e.Value.(*memcacheTable)
-		if t.table.NumEntries() == 0 {
-			t.free()
+		t := e.Value.(*DiscardableTable)
+		if t.NumEntries() == 0 {
+			t.Discard()
 			c.tables.Remove(e)
 			deleted++
 		}
@@ -189,8 +156,8 @@ func (c *Memcache) downsizeTables() {
 	deleted = 0
 	for c.tables.Len() > c.maxTables {
 		last := c.tables.Back()
-		t := last.Value.(*memcacheTable)
-		t.free()
+		t := last.Value.(*DiscardableTable)
+		t.Discard()
 		c.tables.Remove(last)
 		deleted++
 	}
@@ -201,8 +168,8 @@ func (c *Memcache) downsizeTables() {
 	// TODO: Compact and merge underutilised tables.
 }
 
-func (c *Memcache) allocTable() *memcacheTable {
-	t := newMemcacheTable(c.tableSize, c.count)
+func (c *Memcache) allocTable() *DiscardableTable {
+	t := NewDiscardableTable(c.tableSize, c.count)
 	c.count++
 	return t
 }
@@ -227,11 +194,11 @@ func (c *Memcache) Has(key []byte) bool {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
-		} else if t == nil || t.table == nil {
+		} else if t == nil {
 			continue
 		}
 
-		if t.table.Has(key) {
+		if t.Has(key) {
 			return true
 		}
 	}
@@ -248,13 +215,13 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
-		} else if t == nil || t.table == nil {
+		} else if t == nil {
 			continue
 		}
 
-		outBuf := t.table.Get(key, buf)
+		outBuf := t.Get(key, buf)
 		if outBuf != nil {
-			if (c.count - t.gen) > c.maxTables/2 {
+			if (c.count - t.Meta().(int)) > c.maxTables/2 {
 				// Promote old keys to give LRU-like behaviour.
 				c.putWithHash(key, outBuf, keyHash)
 			}
@@ -264,14 +231,14 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 	return nil
 }
 
-func (c *Memcache) findPutTable(entrySize int) *memcacheTable {
-	var t *memcacheTable
+func (c *Memcache) findPutTable(entrySize int) *DiscardableTable {
+	var t *DiscardableTable
 	i := 0
 	// Search a few of the most recent tables for the smallest spot the entry will fit into.
 	for e := c.tables.Front(); e != nil && i < 4; e = e.Next() {
-		et := e.Value.(*memcacheTable)
-		if et.table.FreeSpace() >= entrySize {
-			if t == nil || et.table.FreeSpace() < t.table.FreeSpace() {
+		et := e.Value.(*DiscardableTable)
+		if et.FreeSpace() >= entrySize {
+			if t == nil || et.FreeSpace() < t.FreeSpace() {
 				t = et
 			}
 		}
@@ -296,14 +263,14 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 	if t == nil {
 		if c.tables.Len() >= c.maxTables {
 			last := c.tables.Back()
-			bt := last.Value.(*memcacheTable)
-			bt.free()
+			bt := last.Value.(*DiscardableTable)
+			bt.Discard()
 			c.tables.Remove(last)
 		}
 		t = c.allocTable()
 		c.tables.PushFront(t)
 	}
-	err := t.table.Put(key, val)
+	err := t.Put(key, val)
 	if err != nil {
 		panic(err)
 	}
@@ -325,12 +292,13 @@ func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
-		} else if t == nil || t.table == nil {
+		} else if t == nil || !t.IsAlive() {
+			// While we're here, might as well clean out the garbage.
 			c.erase(hash)
 			continue
 		}
 
-		if t.table.Delete(key) {
+		if t.Delete(key) {
 			c.erase(hash)
 			// Since the tables are exclusive, we can stop here.
 			break
