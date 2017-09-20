@@ -15,6 +15,8 @@ const (
 
 	maxUintptr = ^uintptr(0)
 	maxMemory  = (maxUintptr >> 1)
+
+	changedKeysSweepThreshold = 10000
 )
 
 var (
@@ -38,27 +40,37 @@ func init() {
 	prom.MustRegister(cacheKeys)
 }
 
+type KeyTable map[uint64]*DiscardableTable
+
+// Sentinel value to indicate table entry has been deleted.
+var deletedEntry = new(DiscardableTable)
+
 type Memcache struct {
 	minFreeMem int64
 	tableSize  int
 	maxKeySize int
 	maxValSize int
 
+	doSweepKeys chan KeyTable
+
 	// TODO: Document how this works.
-	keys      map[uint64]*DiscardableTable
-	tables    list.List
-	maxTables int
-	count     int
-	lock      sync.Mutex
+	keys        KeyTable
+	changedKeys KeyTable
+	tables      list.List
+	maxTables   int
+	count       int
+	lock        sync.Mutex
 }
 
 func NewMemcache(minFreeMem int64, tableSize, maxKeySize, maxValSize int) *Memcache {
 	c := &Memcache{
-		minFreeMem: minFreeMem,
-		tableSize:  tableSize,
-		maxKeySize: maxKeySize,
-		maxValSize: maxValSize,
-		keys:       make(map[uint64]*DiscardableTable),
+		minFreeMem:  minFreeMem,
+		tableSize:   tableSize,
+		maxKeySize:  maxKeySize,
+		maxValSize:  maxValSize,
+		doSweepKeys: make(chan KeyTable, 1),
+		keys:        make(KeyTable),
+		changedKeys: make(KeyTable),
 	}
 	go c.memWatcher()
 	go c.sweepKeys()
@@ -113,25 +125,73 @@ func (c *Memcache) memWatcher() {
 }
 
 func (c *Memcache) sweepKeys() {
-	ticker := time.NewTicker(time.Minute)
-	for range ticker.C {
-		c.lock.Lock()
-		start := time.Now()
-		numKeys := len(c.keys)
-		nils := 0
-		for k, v := range c.keys {
-			if v == nil || !v.IsAlive() {
-				nils++
-				c.erase(k)
+	// Operate on a copy of the key map to minimise blocking.
+	keysCopy := make(KeyTable)
+	// Cap the amount of work done while holding c.lock per iteration.
+	nils := make([]uint64, 0, 10000)
+
+	for changed := range c.doSweepKeys {
+		nils = nils[:0]
+
+		sweepStart := time.Now()
+
+		// Merge changes into our copy.
+		for k, t := range changed {
+			if t == deletedEntry {
+				delete(keysCopy, k)
+			} else {
+				keysCopy[k] = t
 			}
 		}
-		deleted := numKeys - len(c.keys)
-		c.lock.Unlock()
+		// Look for candidate keys to verify whether they're still valid.
+		for k, t := range keysCopy {
+			if t == nil || !t.IsAlive() {
+				nils = append(nils, k)
+			}
 
-		if debugLog {
-			log.Printf("Swept %d keys in %0.3f sec, deleted %d, nil %d",
-				numKeys, time.Since(start).Seconds(), deleted, nils)
+			if len(nils) == cap(nils) {
+				break
+			}
 		}
+
+		if len(nils) > 0 {
+			c.lock.Lock()
+			start := time.Now()
+			numKeys := len(c.keys)
+			for _, k := range nils {
+				t, ok := c.keys[k]
+				if !ok {
+					delete(keysCopy, k)
+				} else if t == nil || !t.IsAlive() {
+					c.erase(k)
+				}
+			}
+			deleted := numKeys - len(c.keys)
+
+			if len(nils) == cap(nils) {
+				// More work to be done.
+				c.doSweep()
+			}
+
+			c.lock.Unlock()
+
+			if debugLog {
+				log.Printf("Swept %d keys in %0.3f sec, deleted %d, nils %d, total sweep time %0.3f sec",
+					numKeys, time.Since(start).Seconds(), deleted, len(nils), time.Since(sweepStart).Seconds())
+			}
+		} else if debugLog {
+			log.Printf("No nil entries to sweep, key copies %d, total sweep time %0.3f sec",
+				len(keysCopy), time.Since(sweepStart).Seconds())
+		}
+
+	}
+}
+
+func (c *Memcache) doSweep() {
+	select {
+	case c.doSweepKeys <- c.changedKeys:
+		c.changedKeys = make(KeyTable)
+	default:
 	}
 }
 
@@ -161,6 +221,11 @@ func (c *Memcache) downsizeTables() {
 		c.tables.Remove(last)
 		deleted++
 	}
+	if deleted > 0 {
+		// Discarding non-empty tables creates orphaned key table entries which need
+		// to be swept away.
+		c.doSweep()
+	}
 	if debugLog && deleted > 0 {
 		log.Printf("Deleted %d excess tables in %0.3f sec", deleted, time.Since(start).Seconds())
 	}
@@ -174,14 +239,23 @@ func (c *Memcache) allocTable() *DiscardableTable {
 	return t
 }
 
+func (c *Memcache) keyChanged(hash uint64, t *DiscardableTable) {
+	c.changedKeys[hash] = t
+	if len(c.changedKeys) > changedKeysSweepThreshold {
+		c.doSweep()
+	}
+}
+
 func (c *Memcache) erase(hash uint64) {
 	_, ok := c.keys[hash+1]
 	if ok {
 		// TODO: Maybe simplify by using a dummy deleted element instead of nil.
 		c.keys[hash] = nil
+		c.keyChanged(hash, nil)
 	} else {
 		// No next hash, so no next element for linear probing.
 		delete(c.keys, hash)
+		c.keyChanged(hash, deletedEntry)
 	}
 }
 
@@ -266,6 +340,7 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 			bt := last.Value.(*DiscardableTable)
 			bt.Discard()
 			c.tables.Remove(last)
+			c.doSweep()
 		}
 		t = c.allocTable()
 		c.tables.PushFront(t)
@@ -277,6 +352,7 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 	for ; c.keys[hash] != nil; hash++ {
 	}
 	c.keys[hash] = t
+	c.keyChanged(hash, t)
 }
 
 func (c *Memcache) Put(key, val []byte) {
