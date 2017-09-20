@@ -3,9 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,6 +29,7 @@ var (
 	minAvailableMb = flag.Int("min-available-mb", 512, "Minimum available memory, in MiB")
 	maxKeySize     = flag.Int("max-key-size", 1024, "Max key size in bytes")
 	maxValSize     = flag.Int("max-val-size", 1024*1024, "Max value size in bytes")
+	oomAdj         = flag.Bool("oom-adj", true, "Adjust OOM score so that we're killed first")
 
 	promPort  = flag.Int("prom-port", 0, "Port to export prometheus metrics")
 	pprofAddr = flag.String("pprof-addr", "", "Address/port to serve pprof")
@@ -53,6 +56,13 @@ func main() {
 				panic(err)
 			}
 		}()
+	}
+
+	if *oomAdj {
+		err := ioutil.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Unable to adjust OOM score: %v", err)
+		}
 	}
 
 	cache := dory.NewMemcache(int64(*minAvailableMb)*megabyte, defaultTableSize, *maxKeySize, *maxValSize)
