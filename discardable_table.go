@@ -1,6 +1,7 @@
 package dory
 
 import (
+	"sync/atomic"
 	"syscall"
 )
 
@@ -8,6 +9,7 @@ type DiscardableTable struct {
 	table *PackedTable
 	buf   []byte
 	meta  interface{}
+	dead  int32
 }
 
 func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
@@ -37,10 +39,11 @@ func (t *DiscardableTable) Discard() {
 	}
 	t.table = nil
 	t.buf = nil
+	atomic.StoreInt32(&t.dead, 1)
 }
 
 func (t *DiscardableTable) IsAlive() bool {
-	return t.table != nil
+	return atomic.LoadInt32(&t.dead) == 0
 }
 
 func (t *DiscardableTable) NumEntries() int {
