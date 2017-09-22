@@ -41,7 +41,7 @@ func init() {
 }
 
 func TestPackedTable(t *testing.T) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 
 	addedValues := make(map[string]bool)
 	addedSize := 0
@@ -59,31 +59,48 @@ func TestPackedTable(t *testing.T) {
 	}
 
 	// Delete ~20% of added values
-	i := 0
-	d := len(addedValues) / 5
+	d := 0
+	deletedSize := 0
 	for k := range addedValues {
-		if i >= d {
-			break
+		if rand.Float32() > 0.2 {
+			continue
 		}
+		deletedSize += buffer.EntrySize([]byte(k), values[k])
 		buffer.Delete([]byte(k))
 		delete(addedValues, k)
+		d++
 	}
-	t.Logf("Deleted %d values", d)
+	t.Logf("Deleted %d values of %d bytes", d, deletedSize)
 
-	for k, v := range values {
-		exists := addedValues[k]
+	for i := 0; i < 2; i++ {
+		for k, v := range values {
+			exists := addedValues[k]
 
-		has := buffer.Has([]byte(k))
-		if has != exists {
-			t.Errorf("exists %v != has %v", exists, has)
+			has := buffer.Has([]byte(k))
+			if has != exists {
+				t.Errorf("exists %v != has %v", exists, has)
+			}
+
+			buf := buffer.Get([]byte(k), nil)
+			if exists != (buf != nil) {
+				t.Errorf("exists %v != (buf %v != nil)", exists, buf)
+			}
+			if buf != nil && bytes.Compare(buf, v) != 0 {
+				t.Errorf("buffer for %s != expected", k)
+			}
 		}
 
-		buf := buffer.Get([]byte(k), nil)
-		if exists != (buf != nil) {
-			t.Errorf("exists %v != (buf %v != nil)", exists, buf)
-		}
-		if buf != nil && bytes.Compare(buf, v) != 0 {
-			t.Errorf("buffer for %s != expected", k)
+		if i == 0 {
+			oldFreeSpace := buffer.FreeSpace()
+			buffer.GC()
+			if buffer.DeletedSpace() != 0 {
+				t.Errorf("buffer.DeletedSpace() %d != 0", buffer.DeletedSpace())
+			}
+			if buffer.FreeSpace() != oldFreeSpace+deletedSize {
+				t.Errorf("buffer.FreeSpace() %d != oldFreeSpace %d + deletedSize %d",
+					buffer.FreeSpace(), oldFreeSpace, deletedSize)
+			}
+			t.Logf("New free space %d bytes", buffer.FreeSpace())
 		}
 	}
 }
@@ -93,7 +110,7 @@ func TestPackedTableOverwrite(t *testing.T) {
 	val1 := "hello"
 	val2 := "world"
 
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	if has := buffer.Has([]byte(key)); has {
 		t.Errorf("Unexpected has")
 	}
@@ -123,8 +140,43 @@ func TestPackedTableOverwrite(t *testing.T) {
 	}
 }
 
+func TestPackedTableOverwriteGC(t *testing.T) {
+	key := []byte("dkjfhkdjdfhd")
+	val := []byte("dfjhgkfdjghkfdj hkdfjhdfkjhgfdkhdfk")
+
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
+	for i := 0; i < 1000000; i++ {
+		// Without GC, this will fail after a while.
+		if err := buffer.Put(key, val); err != nil {
+			t.Fatalf("Unexpected put error %v", err)
+		}
+		buffer.GC()
+		buf := buffer.Get(key, nil)
+		if bytes.Compare(buf, val) != 0 {
+			t.Errorf("Unexpected get result %s", string(buf))
+		}
+	}
+}
+
+func TestPackedTableOverwriteAutoGC(t *testing.T) {
+	key := []byte("dkjfhkdjdfhd")
+	val := []byte("dfjhgkfdjghkfdj hkdfjhdfkjhgfdkhdfk")
+
+	buffer := NewPackedTable(make([]byte, bufferSize), bufferSize/2)
+	for i := 0; i < 1000000; i++ {
+		// Without GC, this will fail after a while.
+		if err := buffer.Put(key, val); err != nil {
+			t.Fatalf("Unexpected put error %v", err)
+		}
+		buf := buffer.Get(key, nil)
+		if bytes.Compare(buf, val) != 0 {
+			t.Errorf("Unexpected get result %s", string(buf))
+		}
+	}
+}
+
 func BenchmarkPackedTableHas(b *testing.B) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
 	val := make([]byte, 12345)
 	rand.Read(val)
@@ -138,7 +190,7 @@ func BenchmarkPackedTableHas(b *testing.B) {
 }
 
 func BenchmarkPackedTableHasLongKey(b *testing.B) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := longKey
 	val := make([]byte, 12345)
 	rand.Read(val)
@@ -152,7 +204,7 @@ func BenchmarkPackedTableHasLongKey(b *testing.B) {
 }
 
 func BenchmarkPackedTableHasNotExist(b *testing.B) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
 
 	b.ReportAllocs()
@@ -163,7 +215,7 @@ func BenchmarkPackedTableHasNotExist(b *testing.B) {
 }
 
 func BenchmarkPackedTableGet(b *testing.B) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
 	val := make([]byte, 12345)
 	rand.Read(val)
@@ -179,7 +231,7 @@ func BenchmarkPackedTableGet(b *testing.B) {
 }
 
 func BenchmarkPackedTableGetNotExist(b *testing.B) {
-	buffer := NewPackedTable(make([]byte, bufferSize))
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
 
 	b.ReportAllocs()
@@ -205,7 +257,7 @@ func BenchmarkPackedTablePut(b *testing.B) {
 	b.ResetTimer()
 	i := 0
 	for i < b.N {
-		buffer := NewPackedTable(buf)
+		buffer := NewPackedTable(buf, 0)
 		for _, p := range pairs {
 			if i >= b.N {
 				break
@@ -228,7 +280,7 @@ func BenchmarkPackedTablePutAndDelete(b *testing.B) {
 	b.ResetTimer()
 	i := 0
 	for i < b.N {
-		buffer := NewPackedTable(buf)
+		buffer := NewPackedTable(buf, 0)
 		for _, p := range pairs {
 			if i >= b.N {
 				break
@@ -254,7 +306,7 @@ func BenchmarkPackedTablePutAndOverwrite(b *testing.B) {
 	b.ResetTimer()
 	i := 0
 	for i < b.N {
-		buffer := NewPackedTable(buf)
+		buffer := NewPackedTable(buf, 0)
 		for _, p := range pairs {
 			if i >= b.N {
 				break

@@ -19,7 +19,7 @@ func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
 		panic(err)
 	}
 	return &DiscardableTable{
-		table: NewPackedTable(buf),
+		table: NewPackedTable(buf, len(buf)/4),
 		buf:   buf,
 		meta:  meta,
 	}

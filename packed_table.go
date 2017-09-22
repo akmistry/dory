@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"sort"
 
 	"github.com/dgryski/go-farm"
 )
@@ -13,22 +14,25 @@ var (
 )
 
 type PackedTable struct {
-	buf  []byte
-	off  int
-	keys map[uint32]int32
+	buf             []byte
+	autoGcThreshold int
+	off             int
+	keys            map[uint32]int32
 
-	added   int
-	deleted int
+	added        int
+	deleted      int
+	deletedSpace int
 }
 
-func NewPackedTable(buf []byte) *PackedTable {
+func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 	if len(buf) > 1<<30 {
 		panic("len(buf) > 1GiB")
 	}
 
 	return &PackedTable{
-		buf:  buf,
-		keys: make(map[uint32]int32),
+		buf:             buf,
+		autoGcThreshold: autoGcThreshold,
+		keys:            make(map[uint32]int32),
 	}
 }
 
@@ -97,6 +101,14 @@ func (t *PackedTable) FreeSpace() int {
 	return len(t.buf) - t.off
 }
 
+func (t *PackedTable) LiveSpace() int {
+	return t.off - t.deletedSpace
+}
+
+func (t *PackedTable) DeletedSpace() int {
+	return t.deletedSpace
+}
+
 func (t *PackedTable) NumEntries() int {
 	return t.added - t.deleted
 }
@@ -141,7 +153,12 @@ func (t *PackedTable) Put(key, val []byte) error {
 
 	hash := t.hashEntry(key)
 	if off, ok := t.keys[hash]; ok && off >= 0 {
+		keySize, valSize := t.readSize(int(off))
+		// So that the key doesn't get caught up in GC.
+		t.keys[hash] = -1
 		t.deleted++
+		t.deletedSpace += keySize + valSize + 8
+		t.autoGc()
 	}
 
 	off := t.writeSize(len(key), len(val))
@@ -168,6 +185,7 @@ func (t *PackedTable) Delete(key []byte) bool {
 	hash := t.hashEntry(key)
 	off, ok := t.keys[hash]
 	if ok && off >= 0 {
+		keySize, valSize := t.readSize(int(off))
 		_, ok := t.keys[hash+1]
 		if ok {
 			t.keys[hash] = -1
@@ -175,7 +193,57 @@ func (t *PackedTable) Delete(key []byte) bool {
 			delete(t.keys, hash)
 		}
 		t.deleted++
+		t.deletedSpace += keySize + valSize + 8
+		t.autoGc()
 		return true
 	}
 	return false
+}
+
+func (t *PackedTable) autoGc() {
+	if t.autoGcThreshold > 0 && t.deletedSpace > t.autoGcThreshold {
+		t.GC()
+	}
+}
+
+func (t *PackedTable) GC() {
+	if t.deleted == 0 {
+		// No deleted entries => no GC needed.
+		return
+	}
+
+	type hashEntry struct {
+		hash uint32
+		off  int
+	}
+	entries := make([]hashEntry, 0, t.NumEntries())
+	for h, off := range t.keys {
+		if off < 0 {
+			continue
+		}
+		entries = append(entries, hashEntry{h, int(off)})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].off < entries[j].off
+	})
+
+	t.added = 0
+	t.deleted = 0
+	t.deletedSpace = 0
+	t.off = 0
+	prevOff := -1
+	for _, e := range entries {
+		if e.off <= prevOff {
+			panic("e.off <= prevOff")
+		} else if e.off < t.off {
+			panic("e.off < t.off")
+		}
+		keySize, valSize := t.readSize(e.off)
+		entrySize := keySize + valSize + 8
+		copy(t.buf[t.off:], t.buf[e.off:e.off+entrySize])
+		t.keys[e.hash] = int32(t.off)
+		t.off += entrySize
+		t.added++
+		prevOff = e.off
+	}
 }
