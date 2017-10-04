@@ -4,10 +4,10 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"sync"
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/akmistry/dory"
 )
@@ -25,7 +25,8 @@ func init() {
 
 type Handler struct {
 	c       *dory.Memcache
-	bufPool *sync.Pool
+	bufPool *BufferPool
+	sema    *semaphore.Weighted
 }
 
 func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
@@ -58,7 +59,14 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			resp.WriteHeader(http.StatusNotFound)
 		}
 	case "GET":
-		buf := h.bufPool.Get().([]byte)[:0]
+		err := h.sema.Acquire(req.Context(), 1)
+		if err != nil {
+			resp.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
+		defer h.sema.Release(1)
+
+		buf := h.bufPool.Get()[:0]
 		defer h.bufPool.Put(buf)
 
 		outBuf := h.c.Get(key, buf)
@@ -82,9 +90,15 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		buf := h.bufPool.Get().([]byte)
+		err := h.sema.Acquire(req.Context(), 1)
+		if err != nil {
+			resp.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
+		defer h.sema.Release(1)
+
+		buf := h.bufPool.Get()
 		defer h.bufPool.Put(buf)
-		buf = buf[:cap(buf)]
 
 		n, err := req.Body.Read(buf)
 		if err != nil && err != io.EOF {
@@ -106,10 +120,11 @@ func (h *Handler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func NewHandler(c *dory.Memcache) http.Handler {
-	pool := &sync.Pool{New: func() interface{} { return make([]byte, c.MaxValSize()) }}
+func NewHandler(c *dory.Memcache, maxConcurrentRequests int) http.Handler {
+	pool := NewBufferPool(c.MaxValSize())
 	return promhttp.InstrumentHandlerCounter(requestCounter, &Handler{
 		c:       c,
 		bufPool: pool,
+		sema:    semaphore.NewWeighted(int64(maxConcurrentRequests)),
 	})
 }

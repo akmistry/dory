@@ -26,10 +26,12 @@ const (
 var (
 	listenAddr = flag.String("listen-addr", "0.0.0.0:19513", "Address/port to listen on")
 
-	minAvailableMb = flag.Int("min-available-mb", 512, "Minimum available memory, in MiB")
-	maxKeySize     = flag.Int("max-key-size", 1024, "Max key size in bytes")
-	maxValSize     = flag.Int("max-val-size", 1024*1024, "Max value size in bytes")
-	oomAdj         = flag.Bool("oom-adj", true, "Adjust OOM score so that we're killed first")
+	minAvailableMb        = flag.Int("min-available-mb", 512, "Minimum available memory, in MiB")
+	maxKeySize            = flag.Int("max-key-size", 1024, "Max key size in bytes")
+	maxValSize            = flag.Int("max-val-size", 1024*1024, "Max value size in bytes")
+	oomAdj                = flag.Bool("oom-adj", true, "Adjust OOM score so that we're killed first")
+	maxConcurrentRequests = flag.Int(
+		"max-concurrent-requests", 64, "Maximum number of concurrent get/put requests")
 
 	promPort  = flag.Int("prom-port", 0, "Port to export prometheus metrics")
 	pprofAddr = flag.String("pprof-addr", "", "Address/port to serve pprof")
@@ -66,7 +68,7 @@ func main() {
 	}
 
 	cache := dory.NewMemcache(int64(*minAvailableMb)*megabyte, defaultTableSize, *maxKeySize, *maxValSize)
-	handler := server.NewHandler(cache)
+	handler := server.NewHandler(cache, *maxConcurrentRequests)
 
 	l, err := net.Listen("tcp4", *listenAddr)
 	if err != nil {
