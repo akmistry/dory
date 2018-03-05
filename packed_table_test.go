@@ -106,36 +106,36 @@ func TestPackedTable(t *testing.T) {
 }
 
 func TestPackedTableOverwrite(t *testing.T) {
-	key := "foo"
-	val1 := "hello"
-	val2 := "world"
+	key := []byte("foo")
+	val1 := []byte("hello")
+	val2 := []byte("world")
 
 	buffer := NewPackedTable(make([]byte, bufferSize), 0)
-	if has := buffer.Has([]byte(key)); has {
+	if has := buffer.Has(key); has {
 		t.Errorf("Unexpected has")
 	}
-	if err := buffer.Put([]byte(key), []byte(val1)); err != nil {
+	if err := buffer.Put(key, val1); err != nil {
 		t.Errorf("Unexpected put error %v", err)
 	}
-	if has := buffer.Has([]byte(key)); !has {
+	if has := buffer.Has(key); !has {
 		t.Errorf("Unexpected not has")
 	}
-	buf := buffer.Get([]byte(key), nil)
-	if string(buf) != val1 {
+	buf := buffer.Get(key, nil)
+	if !bytes.Equal(buf, val1) {
 		t.Errorf("Unexpected get result %s", string(buf))
 	}
-	if err := buffer.Put([]byte(key), []byte(val2)); err != nil {
+	if err := buffer.Put(key, val2); err != nil {
 		t.Errorf("Unexpected put error %v", err)
 	}
-	if has := buffer.Has([]byte(key)); !has {
+	if has := buffer.Has(key); !has {
 		t.Errorf("Unexpected not has")
 	}
-	buf = buffer.Get([]byte(key), nil)
-	if string(buf) != val2 {
+	buf = buffer.Get(key, nil)
+	if !bytes.Equal(buf, val2) {
 		t.Errorf("Unexpected get result %s", string(buf))
 	}
-	buffer.Delete([]byte(key))
-	if has := buffer.Has([]byte(key)); has {
+	buffer.Delete(key)
+	if has := buffer.Has(key); has {
 		t.Errorf("Unexpected has")
 	}
 }
@@ -172,6 +172,37 @@ func TestPackedTableOverwriteAutoGC(t *testing.T) {
 		if bytes.Compare(buf, val) != 0 {
 			t.Errorf("Unexpected get result %s", string(buf))
 		}
+	}
+}
+
+func TestPackedTableReset(t *testing.T) {
+	key := []byte("foo")
+	val1 := []byte("hello")
+
+	buffer := NewPackedTable(make([]byte, bufferSize), 0)
+	if has := buffer.Has(key); has {
+		t.Errorf("Unexpected has")
+	}
+	if err := buffer.Put(key, val1); err != nil {
+		t.Errorf("Unexpected put error %v", err)
+	}
+	if has := buffer.Has(key); !has {
+		t.Errorf("Unexpected not has")
+	}
+	buf := buffer.Get(key, nil)
+	if !bytes.Equal(buf, val1) {
+		t.Errorf("Unexpected get result %s", string(buf))
+	}
+	if buffer.NumEntries() != 1 || buffer.NumDeleted() != 0 || buffer.FreeSpace() == bufferSize {
+		t.Errorf("Unexpected stats")
+	}
+
+	buffer.Reset()
+	if has := buffer.Has(key); has {
+		t.Errorf("Unexpected has")
+	}
+	if buffer.NumEntries() != 0 || buffer.NumDeleted() != 0 || buffer.FreeSpace() != bufferSize {
+		t.Errorf("Unexpected stats")
 	}
 }
 

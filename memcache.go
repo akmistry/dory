@@ -147,10 +147,9 @@ func (c *Memcache) sweepKeys() {
 		for k, t := range keysCopy {
 			if t == nil || !t.IsAlive() {
 				nils = append(nils, k)
-			}
-
-			if len(nils) == cap(nils) {
-				break
+				if len(nils) == cap(nils) {
+					break
+				}
 			}
 		}
 
@@ -176,7 +175,7 @@ func (c *Memcache) sweepKeys() {
 			c.lock.Unlock()
 
 			if debugLog {
-				log.Printf("Swept %d keys in %0.3f sec, deleted %d, nils %d, total sweep time %0.3f sec",
+				log.Printf("Swept %d keys in %0.6f sec, deleted %d, nils %d, total sweep time %0.3f sec",
 					numKeys, time.Since(start).Seconds(), deleted, len(nils), time.Since(sweepStart).Seconds())
 			}
 		} else if debugLog {
@@ -261,10 +260,10 @@ func (c *Memcache) erase(hash uint64) {
 
 func (c *Memcache) Has(key []byte) bool {
 	hash := farm.Hash64(key)
+	has := false
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
-	for ; ; hash++ {
+	for ; !has; hash++ {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
@@ -272,20 +271,19 @@ func (c *Memcache) Has(key []byte) bool {
 			continue
 		}
 
-		if t.Has(key) {
-			return true
-		}
+		has = t.Has(key)
 	}
-	return false
+	c.lock.Unlock()
+	return has
 }
 
 func (c *Memcache) Get(key, buf []byte) []byte {
 	hash := farm.Hash64(key)
 	keyHash := hash
+	var outBuf []byte
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
-	for ; ; hash++ {
+	for ; outBuf == nil; hash++ {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
@@ -293,16 +291,16 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 			continue
 		}
 
-		outBuf := t.Get(key, buf)
+		outBuf = t.Get(key, buf)
 		if outBuf != nil {
 			if (c.count - t.Meta().(int)) > c.maxTables/2 {
 				// Promote old keys to give LRU-like behaviour.
 				c.putWithHash(key, outBuf, keyHash)
 			}
-			return outBuf
 		}
 	}
-	return nil
+	c.lock.Unlock()
+	return outBuf
 }
 
 func (c *Memcache) findPutTable(entrySize int) *DiscardableTable {
@@ -359,8 +357,8 @@ func (c *Memcache) Put(key, val []byte) {
 	hash := farm.Hash64(key)
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
 	c.putWithHash(key, val, hash)
+	c.lock.Unlock()
 }
 
 func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
@@ -386,6 +384,6 @@ func (c *Memcache) Delete(key []byte) {
 	hash := farm.Hash64(key)
 
 	c.lock.Lock()
-	defer c.lock.Unlock()
 	c.deleteWithHash(key, hash)
+	c.lock.Unlock()
 }

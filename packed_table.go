@@ -36,6 +36,14 @@ func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 	}
 }
 
+func (t *PackedTable) Reset() {
+	t.off = 0
+	t.added = 0
+	t.deleted = 0
+	t.deletedSpace = 0
+	t.keys = make(map[uint32]int32)
+}
+
 func (t *PackedTable) hashKey(key []byte) uint32 {
 	return farm.Hash32(key)
 }

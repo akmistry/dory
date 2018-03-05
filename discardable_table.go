@@ -42,22 +42,43 @@ func (t *DiscardableTable) Discard() {
 	atomic.StoreInt32(&t.dead, 1)
 }
 
+func (t *DiscardableTable) Reset() {
+	if t.table == nil {
+		panic("t.table == nil")
+	}
+	t.table.Reset()
+}
+
 func (t *DiscardableTable) IsAlive() bool {
 	return atomic.LoadInt32(&t.dead) == 0
 }
 
 func (t *DiscardableTable) NumEntries() int {
 	if t.table == nil {
-		return 0
+		panic("t.table == nil")
 	}
 	return t.table.NumEntries()
 }
 
+func (t *DiscardableTable) NumDeleted() int {
+	if t.table == nil {
+		panic("t.table == nil")
+	}
+	return t.table.NumDeleted()
+}
+
 func (t *DiscardableTable) FreeSpace() int {
 	if t.table == nil {
-		return 0
+		panic("t.table == nil")
 	}
 	return t.table.FreeSpace()
+}
+
+func (t *DiscardableTable) LiveSpace() int {
+	if t.table == nil {
+		panic("t.table == nil")
+	}
+	return t.table.LiveSpace()
 }
 
 func (t *DiscardableTable) Has(key []byte) bool {
