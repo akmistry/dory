@@ -32,6 +32,8 @@ var (
 	oomAdj                = flag.Bool("oom-adj", true, "Adjust OOM score so that we're killed first")
 	maxConcurrentRequests = flag.Int(
 		"max-concurrent-requests", 64, "Maximum number of concurrent get/put requests")
+	constCacheSizeMb = flag.Int("const-cache-size-mb", 0,
+		"Constant cache size, in MiB. Default 0 = use all available memory up to --min-available-mb")
 
 	promPort  = flag.Int("prom-port", 0, "Port to export prometheus metrics")
 	pprofAddr = flag.String("pprof-addr", "", "Address/port to serve pprof")
@@ -67,7 +69,15 @@ func main() {
 		}
 	}
 
-	cache := dory.NewMemcache(int64(*minAvailableMb)*megabyte, defaultTableSize, *maxKeySize, *maxValSize)
+	cacheOpts := dory.MemcacheOptions{
+		MemoryFunction: dory.AvalableMemory(int64(*minAvailableMb)*megabyte, 1.0),
+		MaxKeySize:     *maxKeySize,
+		MaxValSize:     *maxValSize,
+	}
+	if *constCacheSizeMb != 0 {
+		cacheOpts.MemoryFunction = dory.ConstantMemory(int64(*constCacheSizeMb) * megabyte)
+	}
+	cache := dory.NewMemcache(cacheOpts)
 	handler := server.NewHandler(cache, *maxConcurrentRequests)
 
 	l, err := net.Listen("tcp4", *listenAddr)

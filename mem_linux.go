@@ -41,3 +41,9 @@ func getMemAvailable() int64 {
 	}
 	return memAvailable
 }
+
+func AvalableMemory(minFree int64, maxUtilisation float64) MemFunc {
+	return func(usage int64) int64 {
+		return int64(float64(getMemAvailable())*maxUtilisation) + usage - minFree
+	}
+}

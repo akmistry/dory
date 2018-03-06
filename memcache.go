@@ -46,11 +46,27 @@ type KeyTable map[uint64]*DiscardableTable
 // Sentinel value to indicate table entry has been deleted.
 var deletedEntry = new(DiscardableTable)
 
+type MemFunc func(usage int64) int64
+
+func ConstantMemory(size int64) MemFunc {
+	return func(int64) int64 {
+		return size
+	}
+}
+
+const (
+	DefaultTableSize = 4 * megabyte
+	DefaultCacheSize = 64 * megabyte
+
+	DefaultMaxKeySize = 1024
+	DefaultMaxValSize = 1024 * 1024
+)
+
 type Memcache struct {
-	minFreeMem int64
-	tableSize  int
+	tableSize  int64
 	maxKeySize int
 	maxValSize int
+	memFunc    MemFunc
 
 	doSweepKeys chan KeyTable
 
@@ -63,12 +79,36 @@ type Memcache struct {
 	lock        sync.Mutex
 }
 
-func NewMemcache(minFreeMem int64, tableSize, maxKeySize, maxValSize int) *Memcache {
+type MemcacheOptions struct {
+	MemoryFunction MemFunc
+	TableSize      int
+	MaxKeySize     int
+	MaxValSize     int
+}
+
+func valOrDefault(val, def int) int {
+	if val == 0 {
+		return def
+	}
+	return val
+}
+
+func NewMemcache(opts MemcacheOptions) *Memcache {
+	memFunc := opts.MemoryFunction
+	if memFunc == nil {
+		memFunc = ConstantMemory(DefaultCacheSize)
+	}
+
+	tableSize := valOrDefault(opts.TableSize, DefaultTableSize)
+	if tableSize < 1024 || tableSize > 1<<30 {
+		panic("invalid tableSize")
+	}
+
 	c := &Memcache{
-		minFreeMem:  minFreeMem,
-		tableSize:   tableSize,
-		maxKeySize:  maxKeySize,
-		maxValSize:  maxValSize,
+		tableSize:   int64(tableSize),
+		maxKeySize:  valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
+		maxValSize:  valOrDefault(opts.MaxValSize, DefaultMaxValSize),
+		memFunc:     memFunc,
 		doSweepKeys: make(chan KeyTable, 1),
 		keys:        make(KeyTable),
 		changedKeys: make(KeyTable),
@@ -97,26 +137,30 @@ func (c *Memcache) MaxValSize() int {
 func (c *Memcache) memWatcher() {
 	ticker := time.NewTicker(time.Second)
 	for range ticker.C {
-		memAvailable := getMemAvailable()
-
 		c.lock.Lock()
-		availableTableMem := int64(c.tables.Len()*c.tableSize) + memAvailable - c.minFreeMem
+		tableMemUsage := int64(c.tables.Len()) * c.tableSize
+		c.lock.Unlock()
+
+		// Do outside lock to avoid blocking.
+		availableTableMem := c.memFunc(tableMemUsage)
 		if availableTableMem > int64(maxMemory) {
 			availableTableMem = int64(maxMemory)
 		}
-		c.maxTables = int(availableTableMem / int64(c.tableSize))
+
+		c.lock.Lock()
+		c.maxTables = int(availableTableMem / c.tableSize)
 		if c.maxTables < 0 {
 			c.maxTables = 0
 		}
 		c.downsizeTables()
-		numTables := c.tables.Len()
-		maxTables := c.maxTables
+		numTables := int64(c.tables.Len())
+		maxTables := int64(c.maxTables)
 		numKeys := len(c.keys)
 		c.lock.Unlock()
 
 		if debugLog {
-			log.Printf("Mem avail: %d MB, table mem available: %d MB, tables: %d, max tables: %d",
-				memAvailable/megabyte, availableTableMem/megabyte, numTables, maxTables)
+			log.Printf("Available table memory: %d MB, tables: %d, max tables: %d",
+				availableTableMem/megabyte, numTables, maxTables)
 		}
 
 		cacheSize.Set(float64(numTables * c.tableSize))
@@ -234,7 +278,7 @@ func (c *Memcache) downsizeTables() {
 }
 
 func (c *Memcache) allocTable() *DiscardableTable {
-	t := NewDiscardableTable(c.tableSize, c.count)
+	t := NewDiscardableTable(int(c.tableSize), c.count)
 	c.count++
 	return t
 }
