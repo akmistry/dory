@@ -16,6 +16,7 @@ const (
 	maxUintptr = ^uintptr(0)
 	maxMemory  = (maxUintptr >> 1)
 
+	freeSearch                = 4
 	changedKeysSweepThreshold = 10000
 )
 
@@ -307,7 +308,7 @@ func (c *Memcache) findPutTable(entrySize int) *DiscardableTable {
 	var t *DiscardableTable
 	i := 0
 	// Search a few of the most recent tables for the smallest spot the entry will fit into.
-	for e := c.tables.Front(); e != nil && i < 4; e = e.Next() {
+	for e := c.tables.Front(); e != nil && i < freeSearch; e = e.Next() {
 		et := e.Value.(*DiscardableTable)
 		if et.FreeSpace() >= entrySize {
 			if t == nil || et.FreeSpace() < t.FreeSpace() {
