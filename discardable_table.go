@@ -1,15 +1,17 @@
 package dory
 
 import (
+	"container/list"
 	"sync/atomic"
 	"syscall"
 )
 
 type DiscardableTable struct {
-	table *PackedTable
-	buf   []byte
-	meta  interface{}
-	dead  int32
+	table   *PackedTable
+	buf     []byte
+	meta    interface{}
+	element *list.Element
+	dead    int32
 }
 
 func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
@@ -25,8 +27,31 @@ func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
 	}
 }
 
+func (t *DiscardableTable) Recycle(meta interface{}) *DiscardableTable {
+	if t.table == nil {
+		panic("t.table == nil")
+	}
+	newTable := &DiscardableTable{
+		table: NewPackedTable(t.buf, len(t.buf)/4),
+		buf:   t.buf,
+		meta:  meta,
+	}
+	t.table = nil
+	t.buf = nil
+	atomic.StoreInt32(&t.dead, 1)
+	return newTable
+}
+
 func (t *DiscardableTable) Meta() interface{} {
 	return t.meta
+}
+
+func (t *DiscardableTable) SetElement(e *list.Element) {
+	t.element = e
+}
+
+func (t *DiscardableTable) Element() *list.Element {
+	return t.element
 }
 
 func (t *DiscardableTable) Discard() {
@@ -79,6 +104,13 @@ func (t *DiscardableTable) LiveSpace() int {
 		panic("t.table == nil")
 	}
 	return t.table.LiveSpace()
+}
+
+func (t *DiscardableTable) DeletedSpace() int {
+	if t.table == nil {
+		panic("t.table == nil")
+	}
+	return t.table.DeletedSpace()
 }
 
 func (t *DiscardableTable) Has(key []byte) bool {

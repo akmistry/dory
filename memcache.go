@@ -75,7 +75,7 @@ type Memcache struct {
 	changedKeys KeyTable
 	tables      list.List
 	maxTables   int
-	count       int
+	count       uint64
 	lock        sync.Mutex
 }
 
@@ -280,6 +280,38 @@ func (c *Memcache) downsizeTables() {
 func (c *Memcache) allocTable() *DiscardableTable {
 	t := NewDiscardableTable(int(c.tableSize), c.count)
 	c.count++
+	if c.count == 0 {
+		// Don't bother handling this. Just let the server crash and restart.
+		panic("overflow")
+	}
+	return t
+}
+
+func (c *Memcache) recycleTable(old *DiscardableTable) *DiscardableTable {
+	t := old.Recycle(c.count)
+	c.count++
+	if c.count == 0 {
+		// Don't bother handling this. Just let the server crash and restart.
+		panic("overflow")
+	}
+	return t
+}
+
+func (c *Memcache) createTable() *DiscardableTable {
+	var t *DiscardableTable
+	last := c.tables.Back()
+	full := (c.tables.Len() >= c.maxTables)
+
+	if last != nil && (full || last.Value.(*DiscardableTable).NumEntries() == 0) {
+		t = last.Value.(*DiscardableTable)
+		c.tables.Remove(last)
+		t = c.recycleTable(t)
+	} else {
+		t = c.allocTable()
+	}
+	e := c.tables.PushFront(t)
+	t.SetElement(e)
+
 	return t
 }
 
@@ -338,7 +370,7 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 
 		outBuf = t.Get(key, buf)
 		if outBuf != nil {
-			if (c.count - t.Meta().(int)) > c.maxTables/2 {
+			if (c.count - t.Meta().(uint64)) > uint64(c.maxTables/2) {
 				// Promote old keys to give LRU-like behaviour.
 				c.putWithHash(key, outBuf, keyHash)
 			}
@@ -378,15 +410,7 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 
 	t := c.findPutTable(entrySize)
 	if t == nil {
-		if c.tables.Len() >= c.maxTables {
-			last := c.tables.Back()
-			bt := last.Value.(*DiscardableTable)
-			bt.Discard()
-			c.tables.Remove(last)
-			c.doSweep()
-		}
-		t = c.allocTable()
-		c.tables.PushFront(t)
+		t = c.createTable()
 	}
 	err := t.Put(key, val)
 	if err != nil {
@@ -406,6 +430,20 @@ func (c *Memcache) Put(key, val []byte) {
 	c.lock.Unlock()
 }
 
+func (c *Memcache) tryCompaction(t *DiscardableTable) bool {
+	e := t.Element()
+	if t.NumEntries() == 0 {
+		// Move empty tables to the back to allow them to be recycled.
+		t.Reset()
+		c.tables.MoveToBack(e)
+		// Didn't technically compact, but achieved the same result.
+		return true
+	}
+
+	// TODO: Compaction.
+	return false
+}
+
 func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 	for ; ; hash++ {
 		t, ok := c.keys[hash]
@@ -419,6 +457,7 @@ func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 
 		if t.Delete(key) {
 			c.erase(hash)
+			c.tryCompaction(t)
 			// Since the tables are exclusive, we can stop here.
 			break
 		}
