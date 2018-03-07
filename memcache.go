@@ -274,6 +274,31 @@ func (c *Memcache) downsizeTables() {
 		log.Printf("Deleted %d excess tables in %0.3f sec", deleted, time.Since(start).Seconds())
 	}
 
+	if debugLog {
+		// Count stats.
+		liveSpace := 0
+		liveEntries := 0
+		deletedSpace := 0
+		deletedEntries := 0
+		freeSpace := 0
+
+		for e := c.tables.Front(); e != nil; e = e.Next() {
+			t := e.Value.(*DiscardableTable)
+			liveSpace += t.LiveSpace()
+			liveEntries += t.NumEntries()
+			deletedSpace += t.DeletedSpace()
+			deletedEntries += t.NumDeleted()
+			freeSpace += t.FreeSpace()
+		}
+		utilisation := float64(0)
+		if c.tables.Len() > 0 {
+			utilisation = float64(liveSpace) / (float64(c.tables.Len()) * float64(c.tableSize))
+		}
+
+		log.Printf("# tables %d, live (%d/%d MB), deleted (%d/%d MB) free %d MB, utilisation %0.2f",
+			c.tables.Len(), liveEntries, liveSpace/megabyte, deletedEntries, deletedSpace/megabyte,
+			freeSpace/megabyte, utilisation)
+	}
 	// TODO: Compact and merge underutilised tables.
 }
 
@@ -370,7 +395,8 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 
 		outBuf = t.Get(key, buf)
 		if outBuf != nil {
-			if (c.count - t.Meta().(uint64)) > uint64(c.maxTables/2) {
+			age := (c.count - t.Meta().(uint64))
+			if age > freeSearch && age > uint64(c.tables.Len()/2) {
 				// Promote old keys to give LRU-like behaviour.
 				c.putWithHash(key, outBuf, keyHash)
 			}
