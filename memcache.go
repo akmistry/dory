@@ -46,8 +46,13 @@ type KeyTable map[uint64]*DiscardableTable
 // Sentinel value to indicate table entry has been deleted.
 var deletedEntry = new(DiscardableTable)
 
+// MemFunc is a function that returns the amount of memory (in bytes) that
+// should be used by tables in a Memcache. The usage argument is the bytes of
+// memory currently being used by tables.
 type MemFunc func(usage int64) int64
 
+// ConstantMemory returns a MemFunc that causes Memcache to use a fixed amount
+// of memory.
 func ConstantMemory(size int64) MemFunc {
 	return func(int64) int64 {
 		return size

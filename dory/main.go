@@ -70,7 +70,7 @@ func main() {
 	}
 
 	cacheOpts := dory.MemcacheOptions{
-		MemoryFunction: dory.AvalableMemory(int64(*minAvailableMb)*megabyte, 1.0),
+		MemoryFunction: dory.AvailableMemory(int64(*minAvailableMb)*megabyte, 1.0),
 		MaxKeySize:     *maxKeySize,
 		MaxValSize:     *maxValSize,
 	}

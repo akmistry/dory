@@ -6,6 +6,7 @@ import (
 	"syscall"
 )
 
+// TODO: Rename to MmappedTable?
 type DiscardableTable struct {
 	table   *PackedTable
 	buf     []byte

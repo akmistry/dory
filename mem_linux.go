@@ -42,7 +42,11 @@ func getMemAvailable() int64 {
 	return memAvailable
 }
 
-func AvalableMemory(minFree int64, maxUtilisation float64) MemFunc {
+// AvailableMemory returns a MemFunc that cause Memcache to use all available
+// memory on the system. The minFree argument is the minimum amount of memory
+// that should be kept free. The maxUtilisation is the maximum fraction of
+// available memory that should be used.
+func AvailableMemory(minFree int64, maxUtilisation float64) MemFunc {
 	return func(usage int64) int64 {
 		return int64(float64(getMemAvailable())*maxUtilisation) + usage - minFree
 	}
