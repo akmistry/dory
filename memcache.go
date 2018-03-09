@@ -393,8 +393,10 @@ func (c *Memcache) Get(key, buf []byte) []byte {
 			continue
 		}
 
-		outBuf = t.Get(key, buf)
+		outBuf = t.Get(key)
 		if outBuf != nil {
+			// Copy value, because Get() returns a slice into its own memory.
+			outBuf = append(buf, outBuf...)
 			age := (c.count - t.Meta().(uint64))
 			if age > freeSearch && age > uint64(c.tables.Len()/2) {
 				// Promote old keys to give LRU-like behaviour.

@@ -125,6 +125,7 @@ func (t *PackedTable) NumDeleted() int {
 	return t.deleted
 }
 
+// Has returns whether or not the table contains the requested key.
 func (t *PackedTable) Has(key []byte) bool {
 	if len(key) == 0 {
 		panic("zero-sized key")
@@ -133,7 +134,11 @@ func (t *PackedTable) Has(key []byte) bool {
 	return t.findKey(key) >= 0
 }
 
-func (t *PackedTable) Get(key, buf []byte) []byte {
+// Get returns a slice of the value for the key, if it exists in the table,
+// or nil if the key does not exist. The returned slice will be a slice into
+// the table's memory and MUST NOT be modified, and is only valid until the
+// next call into PackedTable.
+func (t *PackedTable) Get(key []byte) []byte {
 	if len(key) == 0 {
 		panic("zero-sized key")
 	}
@@ -145,10 +150,13 @@ func (t *PackedTable) Get(key, buf []byte) []byte {
 
 	keySize, valSize := t.readSize(off)
 	valOff := off + 8 + keySize
-	buf = append(buf, t.buf[valOff:valOff+valSize]...)
-	return buf
+	return t.buf[valOff : valOff+valSize]
 }
 
+// Put adds the key/value into the table, if there is sufficient free space.
+// Returns nil on success, or ErrNoSpace if there is insufficient free space.
+// If the table already contains the key, the existing key/value will be
+// deleted (as if Delete() was called), and the new entry inserted.
 func (t *PackedTable) Put(key, val []byte) error {
 	if len(key) == 0 {
 		panic("zero-sized key")

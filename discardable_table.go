@@ -120,11 +120,11 @@ func (t *DiscardableTable) Has(key []byte) bool {
 	return t.table.Has(key)
 }
 
-func (t *DiscardableTable) Get(key, buf []byte) []byte {
+func (t *DiscardableTable) Get(key []byte) []byte {
 	if t.table == nil {
 		return nil
 	}
-	return t.table.Get(key, buf)
+	return t.table.Get(key)
 }
 
 func (t *DiscardableTable) Put(key, val []byte) error {

@@ -81,7 +81,7 @@ func TestPackedTable(t *testing.T) {
 				t.Errorf("exists %v != has %v", exists, has)
 			}
 
-			buf := buffer.Get([]byte(k), nil)
+			buf := buffer.Get([]byte(k))
 			if exists != (buf != nil) {
 				t.Errorf("exists %v != (buf %v != nil)", exists, buf)
 			}
@@ -120,7 +120,7 @@ func TestPackedTableOverwrite(t *testing.T) {
 	if has := buffer.Has(key); !has {
 		t.Errorf("Unexpected not has")
 	}
-	buf := buffer.Get(key, nil)
+	buf := buffer.Get(key)
 	if !bytes.Equal(buf, val1) {
 		t.Errorf("Unexpected get result %s", string(buf))
 	}
@@ -130,7 +130,7 @@ func TestPackedTableOverwrite(t *testing.T) {
 	if has := buffer.Has(key); !has {
 		t.Errorf("Unexpected not has")
 	}
-	buf = buffer.Get(key, nil)
+	buf = buffer.Get(key)
 	if !bytes.Equal(buf, val2) {
 		t.Errorf("Unexpected get result %s", string(buf))
 	}
@@ -151,7 +151,7 @@ func TestPackedTableOverwriteGC(t *testing.T) {
 			t.Fatalf("Unexpected put error %v", err)
 		}
 		buffer.GC()
-		buf := buffer.Get(key, nil)
+		buf := buffer.Get(key)
 		if bytes.Compare(buf, val) != 0 {
 			t.Errorf("Unexpected get result %s", string(buf))
 		}
@@ -168,7 +168,7 @@ func TestPackedTableOverwriteAutoGC(t *testing.T) {
 		if err := buffer.Put(key, val); err != nil {
 			t.Fatalf("Unexpected put error %v", err)
 		}
-		buf := buffer.Get(key, nil)
+		buf := buffer.Get(key)
 		if bytes.Compare(buf, val) != 0 {
 			t.Errorf("Unexpected get result %s", string(buf))
 		}
@@ -189,7 +189,7 @@ func TestPackedTableReset(t *testing.T) {
 	if has := buffer.Has(key); !has {
 		t.Errorf("Unexpected not has")
 	}
-	buf := buffer.Get(key, nil)
+	buf := buffer.Get(key)
 	if !bytes.Equal(buf, val1) {
 		t.Errorf("Unexpected get result %s", string(buf))
 	}
@@ -252,12 +252,10 @@ func BenchmarkPackedTableGet(b *testing.B) {
 	rand.Read(val)
 	buffer.Put(key, val)
 
-	outBuf := make([]byte, 0, len(val))
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buffer.Get(key, outBuf)
+		buffer.Get(key)
 	}
 }
 
@@ -268,7 +266,7 @@ func BenchmarkPackedTableGetNotExist(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buffer.Get(key, nil)
+		buffer.Get(key)
 	}
 }
 
