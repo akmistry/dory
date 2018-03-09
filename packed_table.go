@@ -38,7 +38,7 @@ type PackedTable struct {
 // autoGcThreshold is the number of bytes of data deleted before the table
 // automatically performs a garbage collection (technically a compaction).
 // If autoGcThreshold is 0, automatic GC is disabled.
-// Note: The slice MUST be smalled than 1GiB in length.
+// Note: The slice MUST be smaller than 1GiB in length.
 func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 	if len(buf) > 1<<30 {
 		panic("len(buf) > 1GiB")
