@@ -18,7 +18,7 @@ Before discussing design, it's important to talk about non-goals for Dory. Speci
 - NOT designed for strong consistency
 - NOT designed to be memory efficient
 
-Although these are non-goals, it's important to be reasonable. Memory overhead is ~32 bytes/key-value pair. Currently, ~90%
+Although these are non-goals, it's important to be reasonable. Memory overhead is ~48 bytes/key-value pair. Currently, ~90%
 of CPU usage is in the protocol stack. Significant improvements to performance can come from either changes
 to Go's HTTP2 stack (ideal), or switching to a different wire protocol. A single server provides sequential consistency,
 although no CAS-like operations are supported (intentionally).
