@@ -41,7 +41,7 @@ func init() {
 	prom.MustRegister(cacheKeys)
 }
 
-type KeyTable map[uint64]*DiscardableTable
+type keyTable map[uint64]*DiscardableTable
 
 // Sentinel value to indicate table entry has been deleted.
 var deletedEntry = new(DiscardableTable)
@@ -73,11 +73,11 @@ type Memcache struct {
 	maxValSize int
 	memFunc    MemFunc
 
-	doSweepKeys chan KeyTable
+	doSweepKeys chan keyTable
 
 	// TODO: Document how this works.
-	keys        KeyTable
-	changedKeys KeyTable
+	keys        keyTable
+	changedKeys keyTable
 	tables      list.List
 	maxTables   int
 	count       uint64
@@ -114,9 +114,9 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		maxKeySize:  valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
 		maxValSize:  valOrDefault(opts.MaxValSize, DefaultMaxValSize),
 		memFunc:     memFunc,
-		doSweepKeys: make(chan KeyTable, 1),
-		keys:        make(KeyTable),
-		changedKeys: make(KeyTable),
+		doSweepKeys: make(chan keyTable, 1),
+		keys:        make(keyTable),
+		changedKeys: make(keyTable),
 	}
 	go c.memWatcher()
 	go c.sweepKeys()
@@ -176,7 +176,7 @@ func (c *Memcache) memWatcher() {
 
 func (c *Memcache) sweepKeys() {
 	// Operate on a copy of the key map to minimise blocking.
-	keysCopy := make(KeyTable)
+	keysCopy := make(keyTable)
 	// Cap the amount of work done while holding c.lock per iteration.
 	nils := make([]uint64, 0, 10000)
 
@@ -239,7 +239,7 @@ func (c *Memcache) sweepKeys() {
 func (c *Memcache) doSweep() {
 	select {
 	case c.doSweepKeys <- c.changedKeys:
-		c.changedKeys = make(KeyTable)
+		c.changedKeys = make(keyTable)
 	default:
 	}
 }
