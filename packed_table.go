@@ -13,6 +13,16 @@ var (
 	ErrNoSpace = errors.New("insufficent space left")
 )
 
+// PackedTable is a simple key/value table that stores key and value data
+// contiguously within a single []byte slice. The only data stored outside the
+// slice is an index used to locate entries in the slice.
+//
+// The primary goals are to minimise heap fragmentation, and allow the user to
+// instantly free memory used by this table (i.e. using munmap()). A good side
+// effect is to also reduce Go GC pressure, although this is not a primary
+// goal.
+//
+// Note: PackedTable is not thread-safe.
 type PackedTable struct {
 	buf             []byte
 	autoGcThreshold int
@@ -24,6 +34,11 @@ type PackedTable struct {
 	deletedSpace int
 }
 
+// Construct a new PackedTable using the given slice to store key/value data.
+// autoGcThreshold is the number of bytes of data deleted before the table
+// automatically performs a garbage collection (technically a compaction).
+// If autoGcThreshold is 0, automatic GC is disabled.
+// Note: The slice MUST be smalled than 1GiB in length.
 func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 	if len(buf) > 1<<30 {
 		panic("len(buf) > 1GiB")
@@ -36,6 +51,7 @@ func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 	}
 }
 
+// Reset erases all data in the table.
 func (t *PackedTable) Reset() {
 	t.off = 0
 	t.added = 0
@@ -101,26 +117,38 @@ func (t *PackedTable) findKey(key []byte) int {
 	return -1
 }
 
+// EntrySize returns the amount of space used in the table's slice by the given
+// key/value. May be used to determine if there is sufficient space to store
+// the key/value.
 func (t *PackedTable) EntrySize(key, val []byte) int {
 	return len(key) + len(val) + 8
 }
 
+// FreeSpace returns the number of bytes of usable free space in the table.
 func (t *PackedTable) FreeSpace() int {
 	return len(t.buf) - t.off
 }
 
+// LiveSpace return the number of bytes used by entries in the table.
 func (t *PackedTable) LiveSpace() int {
 	return t.off - t.deletedSpace
 }
 
+// DeletedSpace returns the number of bytes used by deleted entries in the
+// table. This space may be reclaimed by running a garbage collection.
+// Note: LiveSpace + FreeSpace + DeletedSpace == len(buf)
 func (t *PackedTable) DeletedSpace() int {
 	return t.deletedSpace
 }
 
+// NumEntries returns the number of entries in the table. Should probably be
+// renamed to Len().
 func (t *PackedTable) NumEntries() int {
 	return t.added - t.deleted
 }
 
+// NumDeleted returns the number of deleted entries in the table. This space
+// may be reclaimed by running a garbage collection.
 func (t *PackedTable) NumDeleted() int {
 	return t.deleted
 }
@@ -193,6 +221,10 @@ func (t *PackedTable) Put(key, val []byte) error {
 	return nil
 }
 
+// Delete removes the key, and returns true if the key existed. Deleting a
+// key may not automatically free space used by that key/value. Space is only
+// reclaimed if the amount of deleted space exceeds the auto-GC threshold, or
+// a GC is explicitly performed.
 func (t *PackedTable) Delete(key []byte) bool {
 	if len(key) == 0 {
 		panic("zero-sized key")
@@ -222,6 +254,7 @@ func (t *PackedTable) autoGc() {
 	}
 }
 
+// GC performs a garbage collection to reclaim free space.
 func (t *PackedTable) GC() {
 	if t.deleted == 0 {
 		// No deleted entries => no GC needed.

@@ -40,6 +40,14 @@ func init() {
 	rand.Read(longKey)
 }
 
+func checkSpace(t *testing.T, pt *PackedTable) {
+	t.Helper()
+	if pt.LiveSpace()+pt.FreeSpace()+pt.DeletedSpace() != bufferSize {
+		t.Errorf("LiveSpace %d + FreeSpace %d + DeletedSpace %d != %d",
+			pt.LiveSpace(), pt.FreeSpace(), pt.DeletedSpace(), bufferSize)
+	}
+}
+
 func TestPackedTable(t *testing.T) {
 	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 
@@ -51,6 +59,7 @@ func TestPackedTable(t *testing.T) {
 			addedValues[k] = true
 			addedSize += len(v) + len(k) + 4
 		}
+		checkSpace(t, buffer)
 	}
 
 	t.Logf("Added %d entries, size %d", len(addedValues), addedSize)
@@ -69,6 +78,7 @@ func TestPackedTable(t *testing.T) {
 		buffer.Delete([]byte(k))
 		delete(addedValues, k)
 		d++
+		checkSpace(t, buffer)
 	}
 	t.Logf("Deleted %d values of %d bytes", d, deletedSize)
 
@@ -100,6 +110,7 @@ func TestPackedTable(t *testing.T) {
 				t.Errorf("buffer.FreeSpace() %d != oldFreeSpace %d + deletedSize %d",
 					buffer.FreeSpace(), oldFreeSpace, deletedSize)
 			}
+			checkSpace(t, buffer)
 			t.Logf("New free space %d bytes", buffer.FreeSpace())
 		}
 	}
