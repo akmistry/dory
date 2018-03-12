@@ -18,7 +18,7 @@ const (
 var (
 	values = make(map[string][]byte)
 
-	shortKey = make([]byte, 32)
+	shortKey = make([]byte, 8)
 	longKey  = make([]byte, 1024)
 )
 
@@ -220,8 +220,7 @@ func TestPackedTableReset(t *testing.T) {
 func BenchmarkPackedTableHas(b *testing.B) {
 	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
-	val := make([]byte, 12345)
-	rand.Read(val)
+	val := []byte("foo")
 	buffer.Put(key, val)
 
 	b.ReportAllocs()
@@ -234,8 +233,7 @@ func BenchmarkPackedTableHas(b *testing.B) {
 func BenchmarkPackedTableHasLongKey(b *testing.B) {
 	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := longKey
-	val := make([]byte, 12345)
-	rand.Read(val)
+	val := []byte("foo")
 	buffer.Put(key, val)
 
 	b.ReportAllocs()
@@ -259,8 +257,7 @@ func BenchmarkPackedTableHasNotExist(b *testing.B) {
 func BenchmarkPackedTableGet(b *testing.B) {
 	buffer := NewPackedTable(make([]byte, bufferSize), 0)
 	key := shortKey
-	val := make([]byte, 12345)
-	rand.Read(val)
+	val := []byte("foo")
 	buffer.Put(key, val)
 
 	b.ReportAllocs()
@@ -281,28 +278,44 @@ func BenchmarkPackedTableGetNotExist(b *testing.B) {
 	}
 }
 
-type pair struct {
-	k, v []byte
+var (
+	benchmarkKeys [][]byte
+	benchmarkVal  = []byte("foo")
+)
+
+func init() {
+	// These should all fit into the test table.
+	const generatedKeys = 4096
+	// Use short keys to benchmark overhead rather than the memcpy of key/value
+	// data.
+	const keyLen = 8
+
+	benchmarkKeys = make([][]byte, 0, generatedKeys)
+	for i := 0; i < generatedKeys; i++ {
+		keyBuf := make([]byte, keyLen)
+		rand.Read(keyBuf)
+		benchmarkKeys = append(benchmarkKeys, keyBuf)
+	}
 }
 
 func BenchmarkPackedTablePut(b *testing.B) {
 	buf := make([]byte, bufferSize)
 
-	pairs := make([]pair, 0, len(values))
-	for k, v := range values {
-		pairs = append(pairs, pair{[]byte(k), v})
-	}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	i := 0
+	table := NewPackedTable(buf, 0)
 	for i < b.N {
-		buffer := NewPackedTable(buf, 0)
-		for _, p := range pairs {
+		table.Reset()
+		for _, k := range benchmarkKeys {
 			if i >= b.N {
 				break
 			}
-			buffer.Put(p.k, p.v)
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				// 100% of entries should fit into the table.
+				panic(err)
+			}
 			i++
 		}
 	}
@@ -311,25 +324,24 @@ func BenchmarkPackedTablePut(b *testing.B) {
 func BenchmarkPackedTablePutAndDelete(b *testing.B) {
 	buf := make([]byte, bufferSize)
 
-	pairs := make([]pair, 0, len(values))
-	for k, v := range values {
-		pairs = append(pairs, pair{[]byte(k), v})
-	}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	i := 0
+	table := NewPackedTable(buf, 0)
 	for i < b.N {
-		buffer := NewPackedTable(buf, 0)
-		for _, p := range pairs {
+		table.Reset()
+		for _, k := range benchmarkKeys {
 			if i >= b.N {
 				break
 			}
-			buffer.Put(p.k, p.v)
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
 			i++
 		}
-		for _, p := range pairs {
-			buffer.Delete(p.k)
+		for _, k := range benchmarkKeys {
+			table.Delete(k)
 		}
 	}
 }
@@ -337,25 +349,27 @@ func BenchmarkPackedTablePutAndDelete(b *testing.B) {
 func BenchmarkPackedTablePutAndOverwrite(b *testing.B) {
 	buf := make([]byte, bufferSize)
 
-	pairs := make([]pair, 0, len(values))
-	for k, v := range values {
-		pairs = append(pairs, pair{[]byte(k), v})
-	}
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	i := 0
+	table := NewPackedTable(buf, 0)
 	for i < b.N {
-		buffer := NewPackedTable(buf, 0)
-		for _, p := range pairs {
+		table.Reset()
+		for _, k := range benchmarkKeys {
 			if i >= b.N {
 				break
 			}
-			buffer.Put(p.k, p.v)
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
 			i++
 		}
-		for _, p := range pairs {
-			buffer.Put(p.k, p.v)
+		for _, k := range benchmarkKeys {
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 }
