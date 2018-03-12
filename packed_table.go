@@ -9,6 +9,13 @@ import (
 	"github.com/dgryski/go-farm"
 )
 
+const (
+	// The 1GiB table limit puts an effective cap on key size to 1GiB-8
+	// (single key, 0-size value). This lets us use the top 2 bits of the key
+	// size to store flags (same can be done with value size). Yay!
+	keySizeFlagMask = 3 << 30
+)
+
 var (
 	ErrNoSpace = errors.New("insufficent space left")
 )
@@ -27,7 +34,14 @@ type PackedTable struct {
 	buf             []byte
 	autoGcThreshold int
 	off             int
-	keys            map[uint32]int32
+	// This is essentially a hash-table with linear-probed open-addressing.
+	// Instead of having a dynamically sized table, we just use a uint32-keyed
+	// map as a 2^32 element array. An added advantage is that we don't need to
+	// have a special "empty" element, the map provides that. But we do need to
+	// track deleted keys, which we do by using the value -1. Keys are the
+	// key-hashes. Values are an offset into the byte buffer where the key/value
+	// pair is stored.
+	keys map[uint32]int32
 
 	added        int
 	deleted      int
@@ -65,7 +79,8 @@ func (t *PackedTable) hashKey(key []byte) uint32 {
 }
 
 func (t *PackedTable) readSize(off int) (int, int) {
-	// TODO: Use "unsafe"?
+	// Some platforms don't handle unaligned memory accesses well, so avoid
+	// using "unsafe". Also, this isn't a big performance issue.
 	keySize := binary.LittleEndian.Uint32(t.buf[off:])
 	valSize := binary.LittleEndian.Uint32(t.buf[off+4:])
 	return int(keySize), int(valSize)
@@ -181,6 +196,24 @@ func (t *PackedTable) Get(key []byte) []byte {
 	return t.buf[valOff : valOff+valSize]
 }
 
+func (t *PackedTable) deleteEntry(hash uint32, off int, deleteHashEntry bool) {
+	keySize, valSize := t.readSize(off)
+	if deleteHashEntry {
+		_, ok := t.keys[hash+1]
+		if ok {
+			t.keys[hash] = -1
+		} else {
+			delete(t.keys, hash)
+		}
+	} else {
+		// So that the key doesn't get caught up in GC.
+		t.keys[hash] = -1
+	}
+	t.deleted++
+	t.deletedSpace += keySize + valSize + 8
+	t.autoGc()
+}
+
 // Put adds the key/value into the table, if there is sufficient free space.
 // Returns nil on success, or ErrNoSpace if there is insufficient free space.
 // If the table already contains the key, the existing key/value will be
@@ -197,12 +230,7 @@ func (t *PackedTable) Put(key, val []byte) error {
 
 	hash := t.hashEntry(key)
 	if off, ok := t.keys[hash]; ok && off >= 0 {
-		keySize, valSize := t.readSize(int(off))
-		// So that the key doesn't get caught up in GC.
-		t.keys[hash] = -1
-		t.deleted++
-		t.deletedSpace += keySize + valSize + 8
-		t.autoGc()
+		t.deleteEntry(hash, int(off), false)
 	}
 
 	off := t.writeSize(len(key), len(val))
@@ -233,16 +261,7 @@ func (t *PackedTable) Delete(key []byte) bool {
 	hash := t.hashEntry(key)
 	off, ok := t.keys[hash]
 	if ok && off >= 0 {
-		keySize, valSize := t.readSize(int(off))
-		_, ok := t.keys[hash+1]
-		if ok {
-			t.keys[hash] = -1
-		} else {
-			delete(t.keys, hash)
-		}
-		t.deleted++
-		t.deletedSpace += keySize + valSize + 8
-		t.autoGc()
+		t.deleteEntry(hash, int(off), true)
 		return true
 	}
 	return false
