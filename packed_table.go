@@ -14,6 +14,9 @@ const (
 	// (single key, 0-size value). This lets us use the top 2 bits of the key
 	// size to store flags (same can be done with value size). Yay!
 	keySizeFlagMask = 3 << 30
+
+	// Length of the size prefix for a key/value pair.
+	prefixLen = 8
 )
 
 var (
@@ -88,7 +91,7 @@ func (t *PackedTable) readSize(off int) (int, int) {
 
 func (t *PackedTable) writeSize(key, val int) int {
 	off := t.off
-	t.off += 8
+	t.off += prefixLen
 	binary.LittleEndian.PutUint32(t.buf[off:], uint32(key))
 	binary.LittleEndian.PutUint32(t.buf[off+4:], uint32(val))
 	return off
@@ -105,7 +108,7 @@ func (t *PackedTable) hashEntry(key []byte) uint32 {
 		}
 
 		keySize, _ := t.readSize(int(off))
-		keyOff := int(off) + 8
+		keyOff := int(off) + prefixLen
 		if keySize == len(key) && bytes.Compare(key, t.buf[keyOff:keyOff+len(key)]) == 0 {
 			break
 		}
@@ -124,7 +127,7 @@ func (t *PackedTable) findKey(key []byte) int {
 		}
 
 		keySize, _ := t.readSize(int(off))
-		keyOff := int(off) + 8
+		keyOff := int(off) + prefixLen
 		if keySize == len(key) && bytes.Compare(key, t.buf[keyOff:keyOff+len(key)]) == 0 {
 			return int(off)
 		}
@@ -136,7 +139,7 @@ func (t *PackedTable) findKey(key []byte) int {
 // key/value. May be used to determine if there is sufficient space to store
 // the key/value.
 func (t *PackedTable) EntrySize(key, val []byte) int {
-	return len(key) + len(val) + 8
+	return len(key) + len(val) + prefixLen
 }
 
 // FreeSpace returns the number of bytes of usable free space in the table.
@@ -192,7 +195,7 @@ func (t *PackedTable) Get(key []byte) []byte {
 	}
 
 	keySize, valSize := t.readSize(off)
-	valOff := off + 8 + keySize
+	valOff := off + prefixLen + keySize
 	return t.buf[valOff : valOff+valSize]
 }
 
@@ -210,7 +213,7 @@ func (t *PackedTable) deleteEntry(hash uint32, off int, deleteHashEntry bool) {
 		t.keys[hash] = -1
 	}
 	t.deleted++
-	t.deletedSpace += keySize + valSize + 8
+	t.deletedSpace += keySize + valSize + prefixLen
 	t.autoGc()
 }
 
@@ -307,7 +310,7 @@ func (t *PackedTable) GC() {
 			panic("e.off < t.off")
 		}
 		keySize, valSize := t.readSize(e.off)
-		entrySize := keySize + valSize + 8
+		entrySize := keySize + valSize + prefixLen
 		copy(t.buf[t.off:], t.buf[e.off:e.off+entrySize])
 		t.keys[e.hash] = int32(t.off)
 		t.off += entrySize
