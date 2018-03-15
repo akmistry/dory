@@ -285,14 +285,14 @@ func (t *PackedTable) GC() {
 
 	type hashEntry struct {
 		hash uint32
-		off  int
+		off  int32
 	}
 	entries := make([]hashEntry, 0, t.NumEntries())
 	for h, off := range t.keys {
 		if off < 0 {
 			continue
 		}
-		entries = append(entries, hashEntry{h, int(off)})
+		entries = append(entries, hashEntry{h, off})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].off < entries[j].off
@@ -304,17 +304,17 @@ func (t *PackedTable) GC() {
 	t.off = 0
 	prevOff := -1
 	for _, e := range entries {
-		if e.off <= prevOff {
+		if int(e.off) <= prevOff {
 			panic("e.off <= prevOff")
-		} else if e.off < t.off {
+		} else if int(e.off) < t.off {
 			panic("e.off < t.off")
 		}
-		keySize, valSize := t.readSize(e.off)
+		keySize, valSize := t.readSize(int(e.off))
 		entrySize := keySize + valSize + prefixLen
-		copy(t.buf[t.off:], t.buf[e.off:e.off+entrySize])
+		copy(t.buf[t.off:], t.buf[int(e.off):int(e.off)+entrySize])
 		t.keys[e.hash] = int32(t.off)
 		t.off += entrySize
 		t.added++
-		prevOff = e.off
+		prevOff = int(e.off)
 	}
 }

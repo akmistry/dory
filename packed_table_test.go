@@ -373,3 +373,38 @@ func BenchmarkPackedTablePutAndOverwrite(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkPackedTableGC(b *testing.B) {
+	buf := make([]byte, bufferSize)
+
+	var deletedKeys [][]byte
+	for _, k := range benchmarkKeys {
+		if rand.Float32() > 0.2 {
+			continue
+		}
+		deletedKeys = append(deletedKeys, k)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	i := 0
+	table := NewPackedTable(buf, 0)
+	for i < b.N {
+		b.StopTimer()
+		table.Reset()
+		for _, k := range benchmarkKeys {
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
+		}
+		for _, k := range deletedKeys {
+			table.Delete(k)
+		}
+		b.StartTimer()
+		table.GC()
+		// An "op" is a GC'd key. So the repoerted ns/op should be interpreted
+		// as GCns/key. A GC with 1234 active keys should take 1234*ns/op.
+		i += table.NumEntries()
+	}
+}
