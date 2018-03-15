@@ -278,28 +278,28 @@ func BenchmarkPackedTableGetNotExist(b *testing.B) {
 	}
 }
 
-var (
-	benchmarkKeys [][]byte
-	benchmarkVal  = []byte("foo")
+const (
+	benchKeys   = 4096
+	benchKeyLen = 8
 )
 
-func init() {
-	// These should all fit into the test table.
-	const generatedKeys = 4096
-	// Use short keys to benchmark overhead rather than the memcpy of key/value
-	// data.
-	const keyLen = 8
+var (
+	benchmarkVal = []byte("foo")
+)
 
-	benchmarkKeys = make([][]byte, 0, generatedKeys)
-	for i := 0; i < generatedKeys; i++ {
+func genKeys(keyLen, numKeys int) [][]byte {
+	keys := make([][]byte, 0, numKeys)
+	for i := 0; i < numKeys; i++ {
 		keyBuf := make([]byte, keyLen)
 		rand.Read(keyBuf)
-		benchmarkKeys = append(benchmarkKeys, keyBuf)
+		keys = append(keys, keyBuf)
 	}
+	return keys
 }
 
-func BenchmarkPackedTablePut(b *testing.B) {
+func benchmarkPackedTablePut_N(b *testing.B, keyLen int) {
 	buf := make([]byte, bufferSize)
+	benchmarkKeys := genKeys(keyLen, benchKeys)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -321,61 +321,81 @@ func BenchmarkPackedTablePut(b *testing.B) {
 	}
 }
 
-func BenchmarkPackedTablePutAndDelete(b *testing.B) {
+func BenchmarkPackedTablePut_8(b *testing.B) {
+	benchmarkPackedTablePut_N(b, 8)
+}
+
+func BenchmarkPackedTablePut_64(b *testing.B) {
+	benchmarkPackedTablePut_N(b, 64)
+}
+func BenchmarkPackedTablePut_1024(b *testing.B) {
+	benchmarkPackedTablePut_N(b, 1024)
+}
+
+func BenchmarkPackedTablePutAndOverwrite(b *testing.B) {
 	buf := make([]byte, bufferSize)
+	benchmarkKeys := genKeys(benchKeyLen, benchKeys)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	i := 0
 	table := NewPackedTable(buf, 0)
-	for i < b.N {
+	for ; i < b.N; i += benchKeys {
 		table.Reset()
 		for _, k := range benchmarkKeys {
-			if i >= b.N {
-				break
-			}
 			err := table.Put(k, benchmarkVal)
 			if err != nil {
 				panic(err)
 			}
-			i++
 		}
+		for _, k := range benchmarkKeys {
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
+func benchmarkPackedTableDelete_N(b *testing.B, keyLen int) {
+	buf := make([]byte, bufferSize)
+	benchmarkKeys := genKeys(keyLen, benchKeys)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	i := 0
+	table := NewPackedTable(buf, 0)
+	for ; i < b.N; i += benchKeys {
+		b.StopTimer()
+		table.Reset()
+		for _, k := range benchmarkKeys {
+			err := table.Put(k, benchmarkVal)
+			if err != nil {
+				panic(err)
+			}
+		}
+		b.StartTimer()
 		for _, k := range benchmarkKeys {
 			table.Delete(k)
 		}
 	}
 }
 
-func BenchmarkPackedTablePutAndOverwrite(b *testing.B) {
-	buf := make([]byte, bufferSize)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	i := 0
-	table := NewPackedTable(buf, 0)
-	for i < b.N {
-		table.Reset()
-		for _, k := range benchmarkKeys {
-			if i >= b.N {
-				break
-			}
-			err := table.Put(k, benchmarkVal)
-			if err != nil {
-				panic(err)
-			}
-			i++
-		}
-		for _, k := range benchmarkKeys {
-			err := table.Put(k, benchmarkVal)
-			if err != nil {
-				panic(err)
-			}
-		}
-	}
+func BenchmarkPackedTableDelete_8(b *testing.B) {
+	benchmarkPackedTableDelete_N(b, 8)
 }
 
-func BenchmarkPackedTableGC(b *testing.B) {
+func BenchmarkPackedTableDelete_64(b *testing.B) {
+	benchmarkPackedTableDelete_N(b, 64)
+}
+
+func BenchmarkPackedTableDelete_1024(b *testing.B) {
+	benchmarkPackedTableDelete_N(b, 1024)
+}
+
+func benchmarkPackedTableGC_N(b *testing.B, keyLen int) {
 	buf := make([]byte, bufferSize)
+	benchmarkKeys := genKeys(keyLen, benchKeys)
 
 	var deletedKeys [][]byte
 	for _, k := range benchmarkKeys {
@@ -403,8 +423,20 @@ func BenchmarkPackedTableGC(b *testing.B) {
 		}
 		b.StartTimer()
 		table.GC()
-		// An "op" is a GC'd key. So the repoerted ns/op should be interpreted
+		// An "op" is a GC'd key. So the reported ns/op should be interpreted
 		// as GCns/key. A GC with 1234 active keys should take 1234*ns/op.
 		i += table.NumEntries()
 	}
+}
+
+func BenchmarkPackedTableGC_8(b *testing.B) {
+	benchmarkPackedTableGC_N(b, 8)
+}
+
+func BenchmarkPackedTableGC_64(b *testing.B) {
+	benchmarkPackedTableGC_N(b, 64)
+}
+
+func BenchmarkPackedTableGC_1024(b *testing.B) {
+	benchmarkPackedTableGC_N(b, 1024)
 }
