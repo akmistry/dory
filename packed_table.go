@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"sort"
 
 	"github.com/dgryski/go-farm"
 )
@@ -14,6 +13,9 @@ const (
 	// (single key, 0-size value). This lets us use the top 2 bits of the key
 	// size to store flags (same can be done with value size). Yay!
 	keySizeFlagMask = 3 << 30
+
+	// Flag to indicate this key/value entry has been deleted.
+	keySizeDeletedFlag = 1 << 31
 
 	// Length of the size prefix for a key/value pair.
 	prefixLen = 8
@@ -95,6 +97,11 @@ func (t *PackedTable) writeSize(key, val int) int {
 	binary.LittleEndian.PutUint32(t.buf[off:], uint32(key))
 	binary.LittleEndian.PutUint32(t.buf[off+4:], uint32(val))
 	return off
+}
+
+func (t *PackedTable) tagDeleted(off int) {
+	size := binary.LittleEndian.Uint32(t.buf[off:])
+	binary.LittleEndian.PutUint32(t.buf[off:], size|keySizeDeletedFlag)
 }
 
 func (t *PackedTable) hashEntry(key []byte) uint32 {
@@ -201,6 +208,7 @@ func (t *PackedTable) Get(key []byte) []byte {
 
 func (t *PackedTable) deleteEntry(hash uint32, off int, deleteHashEntry bool) {
 	keySize, valSize := t.readSize(off)
+	t.tagDeleted(off)
 	if deleteHashEntry {
 		_, ok := t.keys[hash+1]
 		if ok {
@@ -283,38 +291,27 @@ func (t *PackedTable) GC() {
 		return
 	}
 
-	type hashEntry struct {
-		hash uint32
-		off  int32
-	}
-	entries := make([]hashEntry, 0, t.NumEntries())
-	for h, off := range t.keys {
-		if off < 0 {
-			continue
-		}
-		entries = append(entries, hashEntry{h, off})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].off < entries[j].off
-	})
+	oldLen := t.off
 
+	if len(t.keys) > 8 && len(t.keys) > (2*t.NumEntries()) {
+		// This is when there are too many deleted entries in the table.
+		t.keys = make(map[uint32]int32, t.NumEntries())
+	}
+	t.off = 0
 	t.added = 0
 	t.deleted = 0
 	t.deletedSpace = 0
-	t.off = 0
-	prevOff := -1
-	for _, e := range entries {
-		if int(e.off) <= prevOff {
-			panic("e.off <= prevOff")
-		} else if int(e.off) < t.off {
-			panic("e.off < t.off")
+	for off := 0; off < oldLen; {
+		keySize, valSize := t.readSize(off)
+		entrySize := (keySize & ^keySizeFlagMask) + valSize + prefixLen
+		if (keySize & keySizeDeletedFlag) == 0 {
+			key := t.buf[off+prefixLen : off+prefixLen+keySize]
+			hash := t.hashEntry(key)
+			copy(t.buf[t.off:], t.buf[off:off+entrySize])
+			t.keys[hash] = int32(t.off)
+			t.off += entrySize
+			t.added++
 		}
-		keySize, valSize := t.readSize(int(e.off))
-		entrySize := keySize + valSize + prefixLen
-		copy(t.buf[t.off:], t.buf[int(e.off):int(e.off)+entrySize])
-		t.keys[e.hash] = int32(t.off)
-		t.off += entrySize
-		t.added++
-		prevOff = int(e.off)
+		off += entrySize
 	}
 }
