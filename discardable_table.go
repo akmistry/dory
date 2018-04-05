@@ -3,7 +3,6 @@ package dory
 import (
 	"container/list"
 	"sync/atomic"
-	"syscall"
 )
 
 // TODO: Rename to MmappedTable?
@@ -16,8 +15,7 @@ type DiscardableTable struct {
 }
 
 func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
-	buf, err := syscall.Mmap(0, 0, size, syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
+	buf, err := mmap(size)
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +57,7 @@ func (t *DiscardableTable) Discard() {
 	if t.table == nil {
 		return
 	}
-	err := syscall.Munmap(t.buf)
+	err := munmap(t.buf)
 	if err != nil {
 		panic(err)
 	}
