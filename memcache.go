@@ -109,6 +109,10 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		panic("invalid tableSize")
 	}
 
+	availableTableMem := memFunc(0)
+	if availableTableMem > int64(maxMemory) {
+		availableTableMem = int64(maxMemory)
+	}
 	c := &Memcache{
 		tableSize:   int64(tableSize),
 		maxKeySize:  valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
@@ -117,6 +121,7 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		doSweepKeys: make(chan keyTable, 1),
 		keys:        make(keyTable),
 		changedKeys: make(keyTable),
+		maxTables:   int(availableTableMem) / tableSize,
 	}
 	go c.memWatcher()
 	go c.sweepKeys()
