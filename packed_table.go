@@ -46,7 +46,8 @@ type PackedTable struct {
 	// track deleted keys, which we do by using the value -1. Keys are the
 	// key-hashes. Values are an offset into the byte buffer where the key/value
 	// pair is stored.
-	keys map[uint32]int32
+	keys   map[uint32]int32
+	hashFn func([]byte) uint32
 
 	added        int
 	deleted      int
@@ -67,6 +68,7 @@ func NewPackedTable(buf []byte, autoGcThreshold int) *PackedTable {
 		buf:             buf,
 		autoGcThreshold: autoGcThreshold,
 		keys:            make(map[uint32]int32),
+		hashFn:          farm.Hash32,
 	}
 }
 
@@ -79,15 +81,14 @@ func (t *PackedTable) Reset() {
 	t.keys = make(map[uint32]int32)
 }
 
-func (t *PackedTable) hashKey(key []byte) uint32 {
-	return farm.Hash32(key)
-}
-
 func (t *PackedTable) readSize(off int) (int, int) {
-	// Some platforms don't handle unaligned memory accesses well, so avoid
-	// using "unsafe". Also, this isn't a big performance issue.
-	keySize := binary.LittleEndian.Uint32(t.buf[off:])
-	valSize := binary.LittleEndian.Uint32(t.buf[off+4:])
+	// Avoid using binary.LittleEndian here because this function is called a
+	// lot, and the compiler only inlines leaf functions.
+	b := t.buf[off : off+8]
+	keySize := uint32(b[0]) | (uint32(b[1]) << 8) | (uint32(b[2]) << 16) |
+		(uint32(b[3]) << 24)
+	valSize := uint32(b[4]) | (uint32(b[5]) << 8) | (uint32(b[6]) << 16) |
+		(uint32(b[7]) << 24)
 	return int(keySize), int(valSize)
 }
 
@@ -100,12 +101,13 @@ func (t *PackedTable) writeSize(key, val int) int {
 }
 
 func (t *PackedTable) tagDeleted(off int) {
-	size := binary.LittleEndian.Uint32(t.buf[off:])
-	binary.LittleEndian.PutUint32(t.buf[off:], size|keySizeDeletedFlag)
+	// Flag only affects the most significant bits. This is shorter, and now
+	// eligable for inlining.
+	t.buf[off+3] |= (keySizeDeletedFlag >> 24)
 }
 
 func (t *PackedTable) hashEntry(key []byte) uint32 {
-	hash := t.hashKey(key)
+	hash := t.hashFn(key)
 	for ; ; hash++ {
 		off, ok := t.keys[hash]
 		if !ok {
@@ -124,7 +126,7 @@ func (t *PackedTable) hashEntry(key []byte) uint32 {
 }
 
 func (t *PackedTable) findKey(key []byte) int {
-	hash := t.hashKey(key)
+	hash := t.hashFn(key)
 	for ; ; hash++ {
 		off, ok := t.keys[hash]
 		if !ok {
@@ -222,7 +224,10 @@ func (t *PackedTable) deleteEntry(hash uint32, off int, deleteHashEntry bool) {
 	}
 	t.deleted++
 	t.deletedSpace += keySize + valSize + prefixLen
-	t.autoGc()
+
+	if t.autoGcThreshold > 0 && t.deletedSpace > t.autoGcThreshold {
+		t.GC()
+	}
 }
 
 // Put adds the key/value into the table, if there is sufficient free space.
@@ -276,12 +281,6 @@ func (t *PackedTable) Delete(key []byte) bool {
 		return true
 	}
 	return false
-}
-
-func (t *PackedTable) autoGc() {
-	if t.autoGcThreshold > 0 && t.deletedSpace > t.autoGcThreshold {
-		t.GC()
-	}
 }
 
 // GC performs a garbage collection to reclaim free space.
