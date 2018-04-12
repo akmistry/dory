@@ -283,6 +283,27 @@ func (t *PackedTable) Delete(key []byte) bool {
 	return false
 }
 
+// Keys returns a list of keys. Returned keys are slices into this table's
+// memory, MUST NOT be modified, and are only valid until the next call
+// into PackedTable.
+func (t *PackedTable) Keys() [][]byte {
+	if t.NumEntries() == 0 {
+		return nil
+	}
+
+	keys := make([][]byte, 0, t.NumEntries())
+	for off := 0; off < t.off; {
+		keySize, valSize := t.readSize(off)
+		entrySize := (keySize & ^keySizeFlagMask) + valSize + prefixLen
+		if (keySize & keySizeDeletedFlag) == 0 {
+			key := t.buf[off+prefixLen : off+prefixLen+keySize]
+			keys = append(keys, key)
+		}
+		off += entrySize
+	}
+	return keys
+}
+
 // GC performs a garbage collection to reclaim free space.
 func (t *PackedTable) GC() {
 	if t.deleted == 0 {

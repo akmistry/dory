@@ -67,6 +67,16 @@ func TestPackedTable(t *testing.T) {
 		t.Errorf("Added size %d is to small", addedSize)
 	}
 
+	keys := buffer.Keys()
+	if len(keys) != buffer.NumEntries() {
+		t.Errorf("len(keys) %d != # entries %d", len(keys), buffer.NumEntries())
+	}
+	for _, k := range keys {
+		if !buffer.Has(k) {
+			t.Errorf("key %v not in table", k)
+		}
+	}
+
 	// Delete ~20% of added values
 	d := 0
 	deletedSize := 0
@@ -81,6 +91,19 @@ func TestPackedTable(t *testing.T) {
 		checkSpace(t, buffer)
 	}
 	t.Logf("Deleted %d values of %d bytes", d, deletedSize)
+
+	keys = buffer.Keys()
+	if len(keys) != buffer.NumEntries() {
+		t.Errorf("len(keys) %d != # entries %d", len(keys), buffer.NumEntries())
+	}
+	for _, k := range keys {
+		if !addedValues[string(k)] {
+			t.Errorf("key %v should not be returned", k)
+		}
+		if !buffer.Has(k) {
+			t.Errorf("key %v not in table", k)
+		}
+	}
 
 	for i := 0; i < 2; i++ {
 		for k, v := range values {
