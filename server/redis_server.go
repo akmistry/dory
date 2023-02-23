@@ -247,11 +247,15 @@ func (s *RedisServer) writeBulk(w *bufio.Writer, val []byte) error {
 	if val == nil {
 		length = -1
 	}
-	lengthBuf := make([]byte, 1, 16)
-	lengthBuf[0] = '$'
-	lengthBuf = strconv.AppendInt(lengthBuf, int64(length), 10)
-	lengthBuf = append(lengthBuf, respCrlf...)
-	_, err := w.Write(lengthBuf)
+
+	lengthBuf := bufferpool.Get(16)
+	defer bufferpool.Put(lengthBuf)
+
+	*lengthBuf = (*lengthBuf)[:1]
+	(*lengthBuf)[0] = '$'
+	*lengthBuf = strconv.AppendInt(*lengthBuf, int64(length), 10)
+	*lengthBuf = append(*lengthBuf, respCrlf...)
+	_, err := w.Write(*lengthBuf)
 	if err != nil {
 		return err
 	}
