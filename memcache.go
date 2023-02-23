@@ -200,7 +200,9 @@ func (c *Memcache) sweepKeys() {
 		}
 		// Look for candidate keys to verify whether they're still valid.
 		for k, t := range keysCopy {
-			if t == nil || !t.IsAlive() {
+			// We can use IsDead() here because the sweep is optimistic. If a dead
+			// table is missed, no biggie.
+			if t == nil || t.IsDead() {
 				nils = append(nils, k)
 				if len(nils) == cap(nils) {
 					break
@@ -216,7 +218,7 @@ func (c *Memcache) sweepKeys() {
 				t, ok := c.keys[k]
 				if !ok {
 					delete(keysCopy, k)
-				} else if t == nil || !t.IsAlive() {
+				} else if t == nil || t.IsDead() {
 					c.erase(k)
 				}
 			}
@@ -487,7 +489,7 @@ func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
-		} else if t == nil || !t.IsAlive() {
+		} else if t == nil || t.IsDead() {
 			// While we're here, might as well clean out the garbage.
 			c.erase(hash)
 			continue

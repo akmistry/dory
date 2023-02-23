@@ -11,7 +11,8 @@ type DiscardableTable struct {
 	buf     []byte
 	meta    interface{}
 	element *list.Element
-	dead    int32
+
+	dead atomic.Bool
 }
 
 func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
@@ -37,7 +38,7 @@ func (t *DiscardableTable) Recycle(meta interface{}) *DiscardableTable {
 	}
 	t.table = nil
 	t.buf = nil
-	atomic.StoreInt32(&t.dead, 1)
+	t.dead.Store(true)
 	return newTable
 }
 
@@ -63,7 +64,7 @@ func (t *DiscardableTable) Discard() {
 	}
 	t.table = nil
 	t.buf = nil
-	atomic.StoreInt32(&t.dead, 1)
+	t.dead.Store(true)
 }
 
 func (t *DiscardableTable) Reset() {
@@ -73,8 +74,17 @@ func (t *DiscardableTable) Reset() {
 	t.table.Reset()
 }
 
-func (t *DiscardableTable) IsAlive() bool {
-	return atomic.LoadInt32(&t.dead) == 0
+func (t *DiscardableTable) IsDead() bool {
+	// This function can be called without locking. But case must be taken when
+	// doing so. Without the external locking, there's no memory state to wait on
+	// (i.e. a mutex lock/unlock) to ensure the atomic becomes visible on another
+	// CPU (except for the external synchronisation during initialisation). This
+	// means there are two possible states:
+	// 1. dead==true => Table is definetly dead.
+	// 2. dead==false => Table might be alive or dead. We can't know unless the
+	//    same lock used to call Recycle() or Discard() is taken while calling
+	//    this function.
+	return t.dead.Load()
 }
 
 func (t *DiscardableTable) NumEntries() int {
