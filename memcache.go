@@ -41,6 +41,7 @@ func init() {
 	prom.MustRegister(cacheKeys)
 }
 
+// TODO: Having a pointer here isn't GC friendly.
 type keyTable map[uint64]*DiscardableTable
 
 // Sentinel value to indicate table entry has been deleted.
@@ -188,6 +189,9 @@ func (c *Memcache) sweepKeys() {
 	for changed := range c.doSweepKeys {
 		nils = nils[:0]
 
+		deadCount := 0
+		nilCount := 0
+
 		sweepStart := time.Now()
 
 		// Merge changes into our copy.
@@ -203,6 +207,12 @@ func (c *Memcache) sweepKeys() {
 			// We can use IsDead() here because the sweep is optimistic. If a dead
 			// table is missed, no biggie.
 			if t == nil || t.IsDead() {
+				if t == nil {
+					nilCount++
+				}
+				if t.IsDead() {
+					deadCount++
+				}
 				nils = append(nils, k)
 				if len(nils) == cap(nils) {
 					break
@@ -219,6 +229,11 @@ func (c *Memcache) sweepKeys() {
 				if !ok {
 					delete(keysCopy, k)
 				} else if t == nil || t.IsDead() {
+					// TODO: If the next hash is non-empty, such as if there was a
+					// collision, this will cause a nil entry to be added to the
+					// changesKeys map, and will re-appear back here. In practice, this
+					// shouldn't be an issue since collisions are rare, and this will be
+					// resolved when the entry is either evicted, or promoted.
 					c.erase(k)
 				}
 			}
@@ -232,8 +247,8 @@ func (c *Memcache) sweepKeys() {
 			c.lock.Unlock()
 
 			if debugLog {
-				log.Printf("Swept %d keys in %0.6f sec, deleted %d, nils %d, total sweep time %0.3f sec",
-					numKeys, time.Since(start).Seconds(), deleted, len(nils), time.Since(sweepStart).Seconds())
+				log.Printf("Swept %d keys in %0.6f sec, deleted %d, nils %d, deads %d, total sweep time %0.3f sec",
+					numKeys, time.Since(start).Seconds(), deleted, nilCount, deadCount, time.Since(sweepStart).Seconds())
 			}
 		} else if debugLog {
 			log.Printf("No nil entries to sweep, key copies %d, total sweep time %0.3f sec",
