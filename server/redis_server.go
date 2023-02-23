@@ -294,8 +294,8 @@ func (s *RedisServer) doCommand(cmd respArray, w *bufio.Writer) error {
 			return fmt.Errorf("RedisServer: invalid GET array length %d", len(cmd))
 		}
 		key := cmd[1].(*[]byte)
-		bufferpool.Put(key)
 		val := s.c.Get(*key, nil)
+		bufferpool.Put(key)
 		return s.writeBulk(w, val)
 	}
 
