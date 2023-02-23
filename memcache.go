@@ -44,6 +44,12 @@ func init() {
 // TODO: Having a pointer here isn't GC friendly.
 type keyTable map[uint64]*DiscardableTable
 
+type keyValuePair struct {
+	k uint64
+	t *DiscardableTable
+}
+type keyList []keyValuePair
+
 // Sentinel value to indicate table entry has been deleted.
 var deletedEntry = new(DiscardableTable)
 
@@ -68,17 +74,21 @@ const (
 	DefaultMaxValSize = 1024 * 1024
 )
 
+var keyListPool = sync.Pool{New: func() interface{} {
+	return make(keyList, 0, 256)
+}}
+
 type Memcache struct {
 	tableSize  int64
 	maxKeySize int
 	maxValSize int
 	memFunc    MemFunc
 
-	doSweepKeys chan keyTable
+	doSweepKeys chan keyList
 
 	// TODO: Document how this works.
 	keys        keyTable
-	changedKeys keyTable
+	changedKeys keyList
 	tables      list.List
 	maxTables   int
 	count       uint64
@@ -119,9 +129,8 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		maxKeySize:  valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
 		maxValSize:  valOrDefault(opts.MaxValSize, DefaultMaxValSize),
 		memFunc:     memFunc,
-		doSweepKeys: make(chan keyTable, 1),
+		doSweepKeys: make(chan keyList, 1),
 		keys:        make(keyTable),
-		changedKeys: make(keyTable),
 		maxTables:   int(availableTableMem) / tableSize,
 	}
 	go c.memWatcher()
@@ -195,13 +204,15 @@ func (c *Memcache) sweepKeys() {
 		sweepStart := time.Now()
 
 		// Merge changes into our copy.
-		for k, t := range changed {
-			if t == deletedEntry {
-				delete(keysCopy, k)
+		for _, p := range changed {
+			if p.t == deletedEntry {
+				delete(keysCopy, p.k)
 			} else {
-				keysCopy[k] = t
+				keysCopy[p.k] = p.t
 			}
 		}
+		keyListPool.Put(changed[:0])
+
 		// Look for candidate keys to verify whether they're still valid.
 		for k, t := range keysCopy {
 			// We can use IsDead() here because the sweep is optimistic. If a dead
@@ -261,7 +272,7 @@ func (c *Memcache) sweepKeys() {
 func (c *Memcache) doSweep() {
 	select {
 	case c.doSweepKeys <- c.changedKeys:
-		c.changedKeys = make(keyTable)
+		c.changedKeys = keyListPool.Get().(keyList)
 	default:
 	}
 }
@@ -368,7 +379,7 @@ func (c *Memcache) createTable() *DiscardableTable {
 }
 
 func (c *Memcache) keyChanged(hash uint64, t *DiscardableTable) {
-	c.changedKeys[hash] = t
+	c.changedKeys = append(c.changedKeys, keyValuePair{hash, t})
 	if len(c.changedKeys) > changedKeysSweepThreshold {
 		c.doSweep()
 	}
