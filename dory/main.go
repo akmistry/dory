@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -24,7 +26,8 @@ const (
 )
 
 var (
-	listenAddr = flag.String("listen-addr", "0.0.0.0:19513", "Address/port to listen on")
+	listenAddr      = flag.String("listen-addr", "0.0.0.0:19513", "Address/port to listen on")
+	redisListenAddr = flag.String("redis-listen-addr", "", "Address/port for redis server to listen on")
 
 	minAvailableMb        = flag.Int("min-available-mb", 512, "Minimum available memory, in MiB")
 	maxKeySize            = flag.Int("max-key-size", 1024, "Max key size in bytes")
@@ -83,6 +86,30 @@ func main() {
 	l, err := net.Listen("tcp4", *listenAddr)
 	if err != nil {
 		panic(err)
+	}
+
+	if *redisListenAddr != "" {
+		go func() {
+			redisL, err := net.Listen("tcp4", *redisListenAddr)
+			if err != nil {
+				panic(err)
+			}
+			redisServer := server.NewRedisServer(cache)
+
+			for {
+				c, err := redisL.Accept()
+				if err != nil {
+					panic(err)
+				}
+				go func() {
+					defer c.Close()
+					err := redisServer.Serve(c)
+					if err != nil && !strings.Contains(err.Error(), "connection reset by peer") {
+						log.Print("Redis server error:", err)
+					}
+				}()
+			}
+		}()
 	}
 
 	h2s := &http2.Server{
