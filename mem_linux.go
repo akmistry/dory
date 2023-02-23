@@ -48,6 +48,21 @@ func getMemAvailable() int64 {
 // available memory that should be used.
 func AvailableMemory(minFree int64, maxUtilisation float64) MemFunc {
 	return func(usage int64) int64 {
-		return int64(float64(getMemAvailable())*maxUtilisation) + usage - minFree
+		// Include usage in the "available memory" calculation. This is because
+		// dory conceptually should only be using available memory. Consider the
+		// following scenario, where utilisation is set to 70%:
+		//
+		// dory usage = 1G, available = 1G
+		// Here, total available is 2G, and hence dory should be able to utilise
+		// up to 1.4G of memory.
+		//
+		// The system state changes so that dory usage = 1G, available = 0.1G
+		// Now, total availble is 1.1G and hence dory should use up to 0.77G,
+		// which is higher than available and should tigger discarding.
+		// However, if we use the old calculation which only considered the
+		// kernel's "MemAvailable" space, it would calculate dory could use
+		// 1.07G, which is not the intended behaviour.
+		availableMem := getMemAvailable() + usage - minFree
+		return int64(float64(availableMem) * maxUtilisation)
 	}
 }
