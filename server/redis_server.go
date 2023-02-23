@@ -7,6 +7,8 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/akmistry/go-util/bufferpool"
+
 	"github.com/akmistry/dory"
 )
 
@@ -177,15 +179,28 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 			return nil, fmt.Errorf("RedisServer: bulk string length %d > max %d",
 				length, respBulkMaxLength)
 		}
-		// Read +2 to account for the terminating CRLF
-		buf := make([]byte, int(length+2))
-		_, err = io.ReadFull(r, buf)
+		allocLen := int(length)
+		if allocLen < (1 << bufferpool.MinSizeBits) {
+			// Round up the buffer allocation to the minimum bufferpool size (16
+			// bytes) to prevent extra allocations.
+			allocLen = (1 << bufferpool.MinSizeBits)
+		}
+		buf := bufferpool.Get(allocLen)
+		*buf = (*buf)[:int(length)]
+		_, err = io.ReadFull(r, *buf)
 		if err != nil {
 			return nil, err
-		} else if !bytes.Equal(buf[int(length):], respCrlf) {
+		}
+		// Check for CRLF and discard
+		peekBuf, err := r.Peek(2)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(peekBuf, respCrlf) {
 			return nil, fmt.Errorf("RedisServer: bulk string does not end in CRLF")
 		}
-		return buf[:int(length)], nil
+		r.Discard(2)
+		return buf, nil
 
 	case respTypeArray:
 		lenStr := make([]byte, 0, 16)
@@ -256,28 +271,31 @@ func (s *RedisServer) doCommand(cmd respArray, w *bufio.Writer) error {
 		return fmt.Errorf("RedisServer: invalid command array length %d", len(cmd))
 	}
 
-	cmdBuf, ok := cmd[0].([]byte)
+	cmdBuf, ok := cmd[0].(*[]byte)
 	if !ok {
 		return fmt.Errorf("RedisServer: command not string")
 	}
-	if bytes.Equal(cmdBuf, respCmdSet) {
+	if bytes.Equal(*cmdBuf, respCmdSet) {
 		if len(cmd) < 3 {
 			return fmt.Errorf("RedisServer: invalid SET array length %d", len(cmd))
 		}
-		key := cmd[1].([]byte)
-		value := cmd[2].([]byte)
-		s.c.Put(key, value)
+		key := cmd[1].(*[]byte)
+		value := cmd[2].(*[]byte)
+		s.c.Put(*key, *value)
+		bufferpool.Put(key)
+		bufferpool.Put(value)
 		return s.writeOkResponse(w)
-	} else if bytes.Equal(cmdBuf, respCmdGet) {
+	} else if bytes.Equal(*cmdBuf, respCmdGet) {
 		if len(cmd) < 2 {
 			return fmt.Errorf("RedisServer: invalid GET array length %d", len(cmd))
 		}
-		key := cmd[1].([]byte)
-		val := s.c.Get(key, nil)
+		key := cmd[1].(*[]byte)
+		bufferpool.Put(key)
+		val := s.c.Get(*key, nil)
 		return s.writeBulk(w, val)
 	}
 
-	return fmt.Errorf("RedisServer: unsupported command %s", string(cmdBuf))
+	return fmt.Errorf("RedisServer: unsupported command %s", string(*cmdBuf))
 }
 
 func (s *RedisServer) Serve(conn io.ReadWriter) error {
