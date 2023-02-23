@@ -9,6 +9,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ var (
 )
 
 func main() {
+	runtime.SetBlockProfileRate(100)
+	runtime.SetMutexProfileFraction(100)
+
 	flag.Parse()
 
 	if *promPort > 0 {
