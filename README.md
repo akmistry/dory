@@ -16,7 +16,7 @@ cache is significantly less effective due to the use of remote/distributed
 storage systems instead of local disk.
 
 So the idea is to try and use that unused memory for a cache, but with the
-ability to raidly return that memory to the OS when needed.
+ability to rapidly return that memory to the OS when needed.
 
 # Design
 Before discussing design, it's important to talk about non-goals for Dory.
@@ -33,7 +33,7 @@ protocol.
 That said, the single primary design goal is to be able to rapidly return
 memory to the OS. This is mainly achieved by avoid the heap as much as
 possible. Although Go has an excellent garbage collector, factors such as heap
-fragmentation, a probelm which exists in every language and runtime, prevent
+fragmentation, a problem which exists in every language and runtime, prevent
 memory from being returned to the OS in a deterministic manner.
 
 Instead, anonymous mmap'd areas are created, and managed using a structure
