@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 
 	"github.com/akmistry/go-util/bufferpool"
 
@@ -34,13 +35,22 @@ var (
 	respCmdGet    = []byte{'g', 'e', 't'}
 	respCmdDel    = []byte{'d', 'e', 'l'}
 	respCmdExists = []byte{'e', 'x', 'i', 's', 't', 's'}
+
+	respArrayPool = sync.Pool{New: func() interface{} {
+		return &respArray{
+			// Common case up to 4 elements, to avoid excessive allocations
+			vals: make([]interface{}, 0, 4),
+		}
+	}}
 )
 
 type respError struct {
 	msg string
 }
 
-type respArray []interface{}
+type respArray struct {
+	vals []interface{}
+}
 
 type RedisServer struct {
 	c *dory.Memcache
@@ -221,14 +231,13 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 			return nil, fmt.Errorf("RedisServer: array length %d > max %d",
 				length, respArrayMaxLength)
 		}
-		// Common case up to 4 elements, to avoid excessive allocations
-		array := respArray(make([]interface{}, 0, 4))
+		array := respArrayPool.Get().(*respArray)
 		for i := 0; i < int(length); i++ {
 			v, err := s.readMessage(r)
 			if err != nil {
 				return nil, err
 			}
-			array = append(array, v)
+			array.vals = append(array.vals, v)
 		}
 		return array, nil
 
@@ -297,38 +306,40 @@ func equalsCommand(cmd, req []byte) bool {
 	return true
 }
 
-func (s *RedisServer) doCommand(cmd respArray, w *bufio.Writer) error {
-	if len(cmd) < 1 {
-		return fmt.Errorf("RedisServer: invalid command array length %d", len(cmd))
+func (s *RedisServer) doCommand(cmd *respArray, w *bufio.Writer) error {
+	if len(cmd.vals) < 1 {
+		return fmt.Errorf("RedisServer: invalid command array length %d", len(cmd.vals))
 	}
 
-	cmdBuf, ok := cmd[0].(*[]byte)
+	cmdBuf, ok := cmd.vals[0].(*[]byte)
 	if !ok {
 		return fmt.Errorf("RedisServer: command not string")
 	}
 	// TODO: Hash-table command lookup, instead of this big if block.
 	if equalsCommand(*cmdBuf, respCmdSet) {
-		if len(cmd) < 3 {
-			return fmt.Errorf("RedisServer: invalid SET array length %d", len(cmd))
+		if len(cmd.vals) < 3 {
+			return fmt.Errorf("RedisServer: invalid SET array length %d", len(cmd.vals))
 		}
-		key := cmd[1].(*[]byte)
-		value := cmd[2].(*[]byte)
+		key := cmd.vals[1].(*[]byte)
+		value := cmd.vals[2].(*[]byte)
 		s.c.Put(*key, *value)
 		bufferpool.Put(key)
 		bufferpool.Put(value)
 		return s.writeOkResponse(w)
 	} else if equalsCommand(*cmdBuf, respCmdGet) {
-		if len(cmd) < 2 {
-			return fmt.Errorf("RedisServer: invalid GET array length %d", len(cmd))
+		if len(cmd.vals) < 2 {
+			return fmt.Errorf("RedisServer: invalid GET array length %d", len(cmd.vals))
 		}
-		key := cmd[1].(*[]byte)
-		val := s.c.Get(*key, nil)
+		key := cmd.vals[1].(*[]byte)
+		getBuf := bufferpool.Get(s.c.MaxValSize())
+		defer bufferpool.Put(getBuf)
+		val := s.c.Get(*key, (*getBuf)[:0])
 		bufferpool.Put(key)
 		return s.writeBulk(w, val)
 	} else if equalsCommand(*cmdBuf, respCmdDel) {
 		delCount := 0
-		for i := 1; i < len(cmd); i++ {
-			key := cmd[i].(*[]byte)
+		for i := 1; i < len(cmd.vals); i++ {
+			key := cmd.vals[i].(*[]byte)
 			s.c.Delete(*key)
 			bufferpool.Put(key)
 			// TODO: Have Delete() return whether the key was actually removed, and
@@ -338,8 +349,8 @@ func (s *RedisServer) doCommand(cmd respArray, w *bufio.Writer) error {
 		return s.writeInteger(w, int64(delCount))
 	} else if equalsCommand(*cmdBuf, respCmdExists) {
 		existsCount := 0
-		for i := 1; i < len(cmd); i++ {
-			key := cmd[i].(*[]byte)
+		for i := 1; i < len(cmd.vals); i++ {
+			key := cmd.vals[i].(*[]byte)
 			if s.c.Has(*key) {
 				existsCount++
 			}
@@ -363,11 +374,16 @@ func (s *RedisServer) Serve(conn io.ReadWriter) error {
 			return err
 		}
 
-		cmdArray, ok := cmd.(respArray)
+		cmdArray, ok := cmd.(*respArray)
 		if !ok {
 			return fmt.Errorf("RedisServer: request not array type")
 		}
 		err = s.doCommand(cmdArray, bufw)
+
+		// Return the array to the pool
+		cmdArray.vals = cmdArray.vals[:0]
+		respArrayPool.Put(cmdArray)
+
 		// Don't flush yet if there are commands still to be read
 		if err == nil && bufr.Buffered() == 0 {
 			err = bufw.Flush()
