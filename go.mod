@@ -3,7 +3,7 @@ module github.com/akmistry/dory
 go 1.20
 
 require (
-	github.com/akmistry/go-util v0.0.0-20230222054058-0eddcc6e9a29
+	github.com/akmistry/go-util v0.0.0-20230226111020-a9825e09798e
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/prometheus/client_golang v1.14.0

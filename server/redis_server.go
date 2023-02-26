@@ -197,7 +197,7 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 			// bytes) to prevent extra allocations.
 			allocLen = (1 << bufferpool.MinSizeBits)
 		}
-		buf := bufferpool.Get(allocLen)
+		buf := bufferpool.GetUninit(allocLen)
 		*buf = (*buf)[:int(length)]
 		_, err = io.ReadFull(r, *buf)
 		if err != nil {
@@ -259,7 +259,7 @@ func (s *RedisServer) writeBulk(w *bufio.Writer, val []byte) error {
 		length = -1
 	}
 
-	lengthBuf := bufferpool.Get(16)
+	lengthBuf := bufferpool.GetUninit(16)
 	defer bufferpool.Put(lengthBuf)
 
 	*lengthBuf = (*lengthBuf)[:1]
@@ -282,7 +282,7 @@ func (s *RedisServer) writeBulk(w *bufio.Writer, val []byte) error {
 }
 
 func (s *RedisServer) writeInteger(w *bufio.Writer, val int64) error {
-	buf := bufferpool.Get(16)
+	buf := bufferpool.GetUninit(16)
 	defer bufferpool.Put(buf)
 
 	*buf = (*buf)[:1]
@@ -331,7 +331,7 @@ func (s *RedisServer) doCommand(cmd *respArray, w *bufio.Writer) error {
 			return fmt.Errorf("RedisServer: invalid GET array length %d", len(cmd.vals))
 		}
 		key := cmd.vals[1].(*[]byte)
-		getBuf := bufferpool.Get(s.c.MaxValSize())
+		getBuf := bufferpool.GetUninit(s.c.MaxValSize())
 		defer bufferpool.Put(getBuf)
 		val := s.c.Get(*key, (*getBuf)[:0])
 		bufferpool.Put(key)
