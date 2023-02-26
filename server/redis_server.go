@@ -108,6 +108,8 @@ func (s *RedisServer) readLine(r *bufio.Reader, out []byte) ([]byte, error) {
 		}
 
 		end := indexCrlf(buf)
+		discardBytes := 0
+		readFinished := false
 		if end == 0 {
 			// Complete string already read. Done.
 			r.Discard(2)
@@ -119,36 +121,73 @@ func (s *RedisServer) readLine(r *bufio.Reader, out []byte) ([]byte, error) {
 				// second-last byte
 				end--
 			}
+			discardBytes = end
+		} else {
+			// CRLF was found, so discard it
+			discardBytes = end + 2
+			readFinished = true
 		}
 
 		out = append(out, buf[:end]...)
-		_, err = r.Discard(end)
-		if err != nil {
-			// Don't expect this to ever happen
-			panic(err)
+		// Don't check the return value of Discard() because it is guaranteed to
+		// succeed if 0 <= discardBytes <= r.Buffered(), which is always true here.
+		r.Discard(discardBytes)
+		if readFinished {
+			break
 		}
 	}
 	return out, nil
 }
 
-func fastParseInt(buf []byte) (int64, error) {
+func (s *RedisServer) readInteger(r *bufio.Reader) (int64, error) {
+	var val int64
 	neg := false
-	val := int64(0)
-	for i, b := range buf {
-		if i == 0 && b == '-' {
-			neg = true
+	first := true
+	for {
+		bufLen := r.Buffered()
+		// Expect at least 2 bytes for the CRLF
+		if bufLen < 2 {
+			_, err := r.Peek(2)
+			if err != nil {
+				return 0, err
+			}
 			continue
 		}
-		if b < '0' || b > '9' {
-			return 0, fmt.Errorf("fastParseInt: invalid character 0x%02x", b)
+
+		buf, _ := r.Peek(bufLen)
+
+		for i, b := range buf {
+			digit := b - '0'
+			if digit > 9 {
+				// Most common case, and quickest to check.
+				if b == '\r' {
+					// End of string. Assume there's a CRLF and discard bytes.
+					// Don't check the return value of Discard() because any error
+					// will be observed in the next Read.
+					r.Discard(i + 2)
+					if neg {
+						val = -val
+					}
+					return val, nil
+				}
+				if b == '-' && i == 0 && first {
+					neg = true
+					continue
+				}
+				return 0, fmt.Errorf("readInteger: invalid character 0x%02x", b)
+			}
+			val *= 10
+			val += int64(digit)
 		}
-		val *= 10
-		val += int64(b - '0')
+
+		// Very lazy check that Peek() gave us the buffer we expected.
+		// This check is here and not earlier because this code path is rare, and
+		// the check is irrelevent for the common case.
+		_ = buf[bufLen-1]
+
+		r.Discard(bufLen)
+		first = false
 	}
-	if neg {
-		val = -val
-	}
-	return val, nil
 }
 
 func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
@@ -169,19 +208,10 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 		return &respError{string(msg)}, nil
 
 	case respTypeInteger:
-		str, err := s.readLine(r, nil)
-		if err != nil {
-			return nil, err
-		}
-		return fastParseInt(str)
+		return s.readInteger(r)
 
 	case respTypeBulkString:
-		lenStr := make([]byte, 0, 16)
-		lenStr, err := s.readLine(r, lenStr)
-		if err != nil {
-			return nil, err
-		}
-		length, err := fastParseInt(lenStr)
+		length, err := s.readInteger(r)
 		if err != nil {
 			return nil, err
 		}
@@ -209,12 +239,7 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 		return buf, nil
 
 	case respTypeArray:
-		lenStr := make([]byte, 0, 16)
-		lenStr, err := s.readLine(r, lenStr)
-		if err != nil {
-			return nil, err
-		}
-		length, err := fastParseInt(lenStr)
+		length, err := s.readInteger(r)
 		if err != nil {
 			return nil, err
 		}
