@@ -97,7 +97,7 @@ func main() {
 			defer c.Close()
 			err := redisServer.Serve(c)
 			if err != nil && !strings.Contains(err.Error(), "connection reset by peer") {
-				log.Print("Redis server error:", err)
+				log.Print("Redis server error: ", err)
 			}
 		}()
 	}
