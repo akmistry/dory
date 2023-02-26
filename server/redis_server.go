@@ -29,7 +29,8 @@ const (
 var (
 	respCrlf = []byte{'\r', '\n'}
 
-	respOkResponse = []byte{'+', 'O', 'K', '\r', '\n'}
+	respResponseOk           = []byte{'+', 'O', 'K', '\r', '\n'}
+	respResponseBulkArrayNil = []byte{'$', '-', '1', '\r', '\n'}
 
 	respCmdSet    = []byte{'s', 'e', 't'}
 	respCmdGet    = []byte{'g', 'e', 't'}
@@ -249,29 +250,37 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 }
 
 func (s *RedisServer) writeOkResponse(w *bufio.Writer) error {
-	_, err := w.Write(respOkResponse)
+	_, err := w.Write(respResponseOk)
 	return err
 }
 
 func (s *RedisServer) writeBulk(w *bufio.Writer, val []byte) error {
-	length := len(val)
 	if val == nil {
-		length = -1
-	}
-
-	lengthBuf := bufferpool.GetUninit(16)
-	defer bufferpool.Put(lengthBuf)
-
-	*lengthBuf = (*lengthBuf)[:1]
-	(*lengthBuf)[0] = respTypeBulkString
-	*lengthBuf = strconv.AppendInt(*lengthBuf, int64(length), 10)
-	*lengthBuf = append(*lengthBuf, respCrlf...)
-	_, err := w.Write(*lengthBuf)
-	if err != nil {
+		_, err := w.Write(respResponseBulkArrayNil)
 		return err
 	}
-	if length < 0 {
-		return nil
+
+	length := len(val)
+
+	var lengthBuf []byte
+	if w.Available() > 22 {
+		// We need a maximum of 22 bytes to write out an integer.
+		// 1 byte for the type
+		// 2 bytes for the CRLF
+		// max 19 bytes for the positive int64
+		lengthBuf = w.AvailableBuffer()[:1]
+	} else {
+		buf := bufferpool.GetUninit(22)
+		defer bufferpool.Put(buf)
+		lengthBuf = (*buf)[:1]
+	}
+
+	lengthBuf[0] = respTypeBulkString
+	lengthBuf = strconv.AppendInt(lengthBuf, int64(length), 10)
+	lengthBuf = append(lengthBuf, respCrlf...)
+	_, err := w.Write(lengthBuf)
+	if err != nil {
+		return err
 	}
 	_, err = w.Write(val)
 	if err != nil {
