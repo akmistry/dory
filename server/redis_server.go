@@ -192,27 +192,20 @@ func (s *RedisServer) readMessage(r *bufio.Reader) (interface{}, error) {
 			return nil, fmt.Errorf("RedisServer: bulk string length %d > max %d",
 				length, respBulkMaxLength)
 		}
-		allocLen := int(length)
+		allocLen := int(length + 2)
 		if allocLen < (1 << bufferpool.MinSizeBits) {
 			// Round up the buffer allocation to the minimum bufferpool size (16
 			// bytes) to prevent extra allocations.
 			allocLen = (1 << bufferpool.MinSizeBits)
 		}
 		buf := bufferpool.GetUninit(allocLen)
-		*buf = (*buf)[:int(length)]
+		*buf = (*buf)[:int(length+2)]
 		_, err = io.ReadFull(r, *buf)
 		if err != nil {
 			return nil, err
 		}
-		// Check for CRLF and discard
-		peekBuf, err := r.Peek(2)
-		if err != nil {
-			return nil, err
-		}
-		if !bytes.Equal(peekBuf, respCrlf) {
-			return nil, fmt.Errorf("RedisServer: bulk string does not end in CRLF")
-		}
-		r.Discard(2)
+		// Just assume the last 2 bytes are CRLF and just drop them
+		*buf = (*buf)[:int(length)]
 		return buf, nil
 
 	case respTypeArray:
