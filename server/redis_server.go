@@ -332,8 +332,6 @@ func (s *RedisServer) doCommand(cmd *respArray, w *bufio.Writer) error {
 		key := cmd.vals[1].(*[]byte)
 		value := cmd.vals[2].(*[]byte)
 		s.c.Put(*key, *value)
-		bufferpool.Put(key)
-		bufferpool.Put(value)
 		return s.writeOkResponse(w)
 	} else if equalsCommand(*cmdBuf, respCmdGet) {
 		if len(cmd.vals) < 2 {
@@ -343,14 +341,12 @@ func (s *RedisServer) doCommand(cmd *respArray, w *bufio.Writer) error {
 		getBuf := bufferpool.GetUninit(s.c.MaxValSize())
 		defer bufferpool.Put(getBuf)
 		val := s.c.Get(*key, (*getBuf)[:0])
-		bufferpool.Put(key)
 		return s.writeBulk(w, val)
 	} else if equalsCommand(*cmdBuf, respCmdDel) {
 		delCount := 0
 		for i := 1; i < len(cmd.vals); i++ {
 			key := cmd.vals[i].(*[]byte)
 			s.c.Delete(*key)
-			bufferpool.Put(key)
 			// TODO: Have Delete() return whether the key was actually removed, and
 			// use that to incement delCount
 			delCount++
@@ -363,12 +359,23 @@ func (s *RedisServer) doCommand(cmd *respArray, w *bufio.Writer) error {
 			if s.c.Has(*key) {
 				existsCount++
 			}
-			bufferpool.Put(key)
 		}
 		return s.writeInteger(w, int64(existsCount))
 	}
 
 	return fmt.Errorf("RedisServer: unsupported command %s", string(*cmdBuf))
+}
+
+func freeRespArray(a *respArray) {
+	for i, v := range a.vals {
+		switch v := v.(type) {
+		case *[]byte:
+			bufferpool.Put(v)
+		}
+		a.vals[i] = nil
+	}
+	a.vals = a.vals[:0]
+	respArrayPool.Put(a)
 }
 
 func (s *RedisServer) Serve(conn io.ReadWriter) error {
@@ -390,8 +397,7 @@ func (s *RedisServer) Serve(conn io.ReadWriter) error {
 		err = s.doCommand(cmdArray, bufw)
 
 		// Return the array to the pool
-		cmdArray.vals = cmdArray.vals[:0]
-		respArrayPool.Put(cmdArray)
+		freeRespArray(cmdArray)
 
 		// Don't flush yet if there are commands still to be read
 		if err == nil && bufr.Buffered() == 0 {
