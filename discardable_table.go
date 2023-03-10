@@ -2,7 +2,6 @@ package dory
 
 import (
 	"container/list"
-	"sync/atomic"
 )
 
 // TODO: Rename to MmappedTable?
@@ -12,7 +11,7 @@ type DiscardableTable struct {
 	meta    interface{}
 	element *list.Element
 
-	dead atomic.Bool
+	keyHashes []uint64
 }
 
 func NewDiscardableTable(size int, meta interface{}) *DiscardableTable {
@@ -38,7 +37,6 @@ func (t *DiscardableTable) Recycle(meta interface{}) *DiscardableTable {
 	}
 	t.table = nil
 	t.buf = nil
-	t.dead.Store(true)
 	return newTable
 }
 
@@ -64,7 +62,6 @@ func (t *DiscardableTable) Discard() {
 	}
 	t.table = nil
 	t.buf = nil
-	t.dead.Store(true)
 }
 
 func (t *DiscardableTable) Reset() {
@@ -72,19 +69,7 @@ func (t *DiscardableTable) Reset() {
 		panic("t.table == nil")
 	}
 	t.table.Reset()
-}
-
-func (t *DiscardableTable) IsDead() bool {
-	// This function can be called without locking. But case must be taken when
-	// doing so. Without the external locking, there's no memory state to wait on
-	// (i.e. a mutex lock/unlock) to ensure the atomic becomes visible on another
-	// CPU (except for the external synchronisation during initialisation). This
-	// means there are two possible states:
-	// 1. dead==true => Table is definetly dead.
-	// 2. dead==false => Table might be alive or dead. We can't know unless the
-	//    same lock used to call Recycle() or Discard() is taken while calling
-	//    this function.
-	return t.dead.Load()
+	t.keyHashes = nil
 }
 
 func (t *DiscardableTable) NumEntries() int {
@@ -136,10 +121,11 @@ func (t *DiscardableTable) Get(key []byte) []byte {
 	return t.table.Get(key)
 }
 
-func (t *DiscardableTable) Put(key, val []byte) error {
+func (t *DiscardableTable) Put(key, val []byte, hash uint64) error {
 	if t.table == nil {
 		return nil
 	}
+	t.keyHashes = append(t.keyHashes, hash)
 	return t.table.Put(key, val)
 }
 
@@ -148,4 +134,8 @@ func (t *DiscardableTable) Delete(key []byte) bool {
 		return false
 	}
 	return t.table.Delete(key)
+}
+
+func (t *DiscardableTable) KeyHashes() []uint64 {
+	return t.keyHashes
 }

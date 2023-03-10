@@ -44,15 +44,6 @@ func init() {
 // TODO: Having a pointer here isn't GC friendly.
 type keyTable map[uint64]*DiscardableTable
 
-type keyValuePair struct {
-	k uint64
-	t *DiscardableTable
-}
-type keyList []keyValuePair
-
-// Sentinel value to indicate table entry has been deleted.
-var deletedEntry = new(DiscardableTable)
-
 // MemFunc is a function that returns the amount of memory (in bytes) that
 // should be used by tables in a Memcache. The usage argument is the bytes of
 // memory currently being used by tables.
@@ -74,25 +65,18 @@ const (
 	DefaultMaxValSize = 1024 * 1024
 )
 
-var keyListPool = sync.Pool{New: func() interface{} {
-	return make(keyList, 0, 256)
-}}
-
 type Memcache struct {
 	tableSize  int64
 	maxKeySize int
 	maxValSize int
 	memFunc    MemFunc
 
-	doSweepKeys chan keyList
-
 	// TODO: Document how this works.
-	keys        keyTable
-	changedKeys keyList
-	tables      list.List
-	maxTables   int
-	count       uint64
-	lock        sync.Mutex
+	keys      keyTable
+	tables    list.List
+	maxTables int
+	count     uint64
+	lock      sync.Mutex
 }
 
 type MemcacheOptions struct {
@@ -125,16 +109,14 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		availableTableMem = int64(maxMemory)
 	}
 	c := &Memcache{
-		tableSize:   int64(tableSize),
-		maxKeySize:  valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
-		maxValSize:  valOrDefault(opts.MaxValSize, DefaultMaxValSize),
-		memFunc:     memFunc,
-		doSweepKeys: make(chan keyList, 1),
-		keys:        make(keyTable),
-		maxTables:   int(availableTableMem) / tableSize,
+		tableSize:  int64(tableSize),
+		maxKeySize: valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
+		maxValSize: valOrDefault(opts.MaxValSize, DefaultMaxValSize),
+		memFunc:    memFunc,
+		keys:       make(keyTable),
+		maxTables:  int(availableTableMem) / tableSize,
 	}
 	go c.memWatcher()
-	go c.sweepKeys()
 	return c
 }
 
@@ -189,91 +171,19 @@ func (c *Memcache) memWatcher() {
 	}
 }
 
-func (c *Memcache) sweepKeys() {
-	// Operate on a copy of the key map to minimise blocking.
-	keysCopy := make(keyTable)
-	// Cap the amount of work done while holding c.lock per iteration.
-	nils := make([]uint64, 0, 10000)
-
-	for changed := range c.doSweepKeys {
-		nils = nils[:0]
-
-		deadCount := 0
-		nilCount := 0
-
-		sweepStart := time.Now()
-
-		// Merge changes into our copy.
-		for _, p := range changed {
-			if p.t == deletedEntry {
-				delete(keysCopy, p.k)
-			} else {
-				keysCopy[p.k] = p.t
-			}
+// Deletes any hash entries that point to |t|.
+func (c *Memcache) cleanupTable(t *DiscardableTable) {
+	start := time.Now()
+	hashes := t.KeyHashes()
+	// TODO: This could take a while, so consider spreading the work over many
+	// requests.
+	for _, h := range hashes {
+		if c.keys[h] == t {
+			c.erase(h)
 		}
-		keyListPool.Put(changed[:0])
-
-		// Look for candidate keys to verify whether they're still valid.
-		for k, t := range keysCopy {
-			// We can use IsDead() here because the sweep is optimistic. If a dead
-			// table is missed, no biggie.
-			if t == nil || t.IsDead() {
-				if t == nil {
-					nilCount++
-				}
-				if t.IsDead() {
-					deadCount++
-				}
-				nils = append(nils, k)
-				if len(nils) == cap(nils) {
-					break
-				}
-			}
-		}
-
-		if len(nils) > 0 {
-			c.lock.Lock()
-			start := time.Now()
-			numKeys := len(c.keys)
-			for _, k := range nils {
-				t, ok := c.keys[k]
-				if !ok {
-					delete(keysCopy, k)
-				} else if t == nil || t.IsDead() {
-					// TODO: If the next hash is non-empty, such as if there was a
-					// collision, this will cause a nil entry to be added to the
-					// changesKeys map, and will re-appear back here. In practice, this
-					// shouldn't be an issue since collisions are rare, and this will be
-					// resolved when the entry is either evicted, or promoted.
-					c.erase(k)
-				}
-			}
-			deleted := numKeys - len(c.keys)
-
-			if len(nils) == cap(nils) {
-				// More work to be done.
-				c.doSweep()
-			}
-
-			c.lock.Unlock()
-
-			if debugLog {
-				log.Printf("Swept %d keys in %0.6f sec, deleted %d, nils %d, deads %d, total sweep time %0.3f sec",
-					numKeys, time.Since(start).Seconds(), deleted, nilCount, deadCount, time.Since(sweepStart).Seconds())
-			}
-		} else if debugLog {
-			log.Printf("No nil entries to sweep, key copies %d, total sweep time %0.3f sec",
-				len(keysCopy), time.Since(sweepStart).Seconds())
-		}
-
 	}
-}
-
-func (c *Memcache) doSweep() {
-	select {
-	case c.doSweepKeys <- c.changedKeys:
-		c.changedKeys = keyListPool.Get().(keyList)
-	default:
+	if debugLog {
+		log.Printf("cleanupTable hashes: %d, time: %v", len(hashes), time.Since(start))
 	}
 }
 
@@ -285,6 +195,8 @@ func (c *Memcache) downsizeTables() {
 		t := e.Value.(*DiscardableTable)
 		if t.NumEntries() == 0 {
 			t.Discard()
+			// No call to cleanupTable() here because the table is empty, which
+			// implies there are no hashes pointing to it to clean up.
 			c.tables.Remove(e)
 			deleted++
 		}
@@ -300,13 +212,9 @@ func (c *Memcache) downsizeTables() {
 		last := c.tables.Back()
 		t := last.Value.(*DiscardableTable)
 		t.Discard()
+		c.cleanupTable(t)
 		c.tables.Remove(last)
 		deleted++
-	}
-	if deleted > 0 {
-		// Discarding non-empty tables creates orphaned key table entries which need
-		// to be swept away.
-		c.doSweep()
 	}
 	if debugLog && deleted > 0 {
 		log.Printf("Deleted %d excess tables in %0.3f sec", deleted, time.Since(start).Seconds())
@@ -352,11 +260,13 @@ func (c *Memcache) allocTable() *DiscardableTable {
 
 func (c *Memcache) recycleTable(old *DiscardableTable) *DiscardableTable {
 	t := old.Recycle(c.count)
+	c.cleanupTable(old)
 	c.count++
 	if c.count == 0 {
 		// Don't bother handling this. Just let the server crash and restart.
 		panic("overflow")
 	}
+
 	return t
 }
 
@@ -378,23 +288,19 @@ func (c *Memcache) createTable() *DiscardableTable {
 	return t
 }
 
-func (c *Memcache) keyChanged(hash uint64, t *DiscardableTable) {
-	c.changedKeys = append(c.changedKeys, keyValuePair{hash, t})
-	if len(c.changedKeys) > changedKeysSweepThreshold {
-		c.doSweep()
-	}
-}
-
 func (c *Memcache) erase(hash uint64) {
 	_, ok := c.keys[hash+1]
 	if ok {
+		// The next hash exists, which _might_ be there due to linear probing.
+		// Replace the hash value with nil instead of deleting it, so that key
+		// accesses do probing.
 		// TODO: Maybe simplify by using a dummy deleted element instead of nil.
+		// TODO: Determine whether the next contiguous entries exist due to linear
+		// probing, and shuffle them down.
 		c.keys[hash] = nil
-		c.keyChanged(hash, nil)
 	} else {
 		// No next hash, so no next element for linear probing.
 		delete(c.keys, hash)
-		c.keyChanged(hash, deletedEntry)
 	}
 }
 
@@ -463,6 +369,8 @@ func (c *Memcache) findPutTable(entrySize int) *DiscardableTable {
 }
 
 func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
+	// Only one copy of the key should exist anywhere in the cache, so
+	// deleting any existing value before inserting the new one.
 	c.deleteWithHash(key, hash)
 
 	if c.maxTables == 0 {
@@ -478,14 +386,14 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 	if t == nil {
 		t = c.createTable()
 	}
-	err := t.Put(key, val)
+	err := t.Put(key, val, hash)
 	if err != nil {
 		panic(err)
 	}
+	// Linear probing for the next free hash slot.
 	for ; c.keys[hash] != nil; hash++ {
 	}
 	c.keys[hash] = t
-	c.keyChanged(hash, t)
 }
 
 func (c *Memcache) Put(key, val []byte) {
@@ -515,9 +423,9 @@ func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 		t, ok := c.keys[hash]
 		if !ok {
 			break
-		} else if t == nil || t.IsDead() {
-			// While we're here, might as well clean out the garbage.
-			c.erase(hash)
+		} else if t == nil {
+			// Slot for deleted entry.
+			// TODO: Consider migrating probed entries closer to their optimal slot.
 			continue
 		}
 
