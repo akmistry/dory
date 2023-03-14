@@ -49,6 +49,10 @@ type keyTable map[uint64]*DiscardableTable
 // memory currently being used by tables.
 type MemFunc func(usage int64) int64
 
+// HashFunc is a function which hashes a byte array into a 64-bit hash.
+// The hash should have uniform distribution, suitable for use in a hash table.
+type HashFunc func(b []byte) uint64
+
 // ConstantMemory returns a MemFunc that causes Memcache to use a fixed amount
 // of memory.
 func ConstantMemory(size int64) MemFunc {
@@ -70,6 +74,7 @@ type Memcache struct {
 	maxKeySize int
 	maxValSize int
 	memFunc    MemFunc
+	hashFunc   HashFunc
 
 	// TODO: Document how this works.
 	keys      keyTable
@@ -81,6 +86,7 @@ type Memcache struct {
 
 type MemcacheOptions struct {
 	MemoryFunction MemFunc
+	HashFunction   HashFunc
 	TableSize      int
 	MaxKeySize     int
 	MaxValSize     int
@@ -99,6 +105,11 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		memFunc = ConstantMemory(DefaultCacheSize)
 	}
 
+	hashFunc := opts.HashFunction
+	if hashFunc == nil {
+		hashFunc = farm.Hash64
+	}
+
 	tableSize := valOrDefault(opts.TableSize, DefaultTableSize)
 	if tableSize < 1024 || tableSize > 1<<30 {
 		panic("invalid tableSize")
@@ -113,6 +124,7 @@ func NewMemcache(opts MemcacheOptions) *Memcache {
 		maxKeySize: valOrDefault(opts.MaxKeySize, DefaultMaxKeySize),
 		maxValSize: valOrDefault(opts.MaxValSize, DefaultMaxValSize),
 		memFunc:    memFunc,
+		hashFunc:   hashFunc,
 		keys:       make(keyTable),
 		maxTables:  int(availableTableMem) / tableSize,
 	}
@@ -305,7 +317,7 @@ func (c *Memcache) erase(hash uint64) {
 }
 
 func (c *Memcache) Has(key []byte) bool {
-	hash := farm.Hash64(key)
+	hash := c.hashFunc(key)
 	has := false
 
 	c.lock.Lock()
@@ -324,7 +336,7 @@ func (c *Memcache) Has(key []byte) bool {
 }
 
 func (c *Memcache) Get(key, buf []byte) []byte {
-	hash := farm.Hash64(key)
+	hash := c.hashFunc(key)
 	keyHash := hash
 	var outBuf []byte
 
@@ -397,7 +409,7 @@ func (c *Memcache) putWithHash(key, val []byte, hash uint64) {
 }
 
 func (c *Memcache) Put(key, val []byte) {
-	hash := farm.Hash64(key)
+	hash := c.hashFunc(key)
 
 	c.lock.Lock()
 	c.putWithHash(key, val, hash)
@@ -439,7 +451,7 @@ func (c *Memcache) deleteWithHash(key []byte, hash uint64) {
 }
 
 func (c *Memcache) Delete(key []byte) {
-	hash := farm.Hash64(key)
+	hash := c.hashFunc(key)
 
 	c.lock.Lock()
 	c.deleteWithHash(key, hash)
